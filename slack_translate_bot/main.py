@@ -4,6 +4,7 @@ Slack Events API endpoint: on new channel message, translate EN -> DE and post a
 
 import logging
 import os
+import re
 from collections import OrderedDict
 
 from fastapi import FastAPI, Request, Response
@@ -12,6 +13,26 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from . import config
 from .slack_verify import verify_slack_request
 from .translate import translate_en_to_de
+
+# Slack emoji shortcodes :name: — we replace with placeholders so DeepL doesn't translate them
+_EMOJI_PATTERN = re.compile(r":([a-zA-Z0-9_+]+):")
+_EMOJI_PLACEHOLDER = "EMOJISLACK"
+
+
+def _replace_slack_emojis_for_translation(text: str) -> tuple[str, list[str]]:
+    """Replace :shortcode: with placeholders. Returns (modified_text, list of original shortcodes in order)."""
+    shortcodes: list[str] = []
+    def repl(m: re.Match) -> str:
+        shortcodes.append(":" + m.group(1) + ":")
+        return f":{_EMOJI_PLACEHOLDER}{len(shortcodes)-1}:"
+    return _EMOJI_PATTERN.sub(repl, text), shortcodes
+
+
+def _restore_slack_emojis(text: str, shortcodes: list[str]) -> str:
+    """Put original :shortcode: back in place of placeholders."""
+    for i, orig in enumerate(shortcodes):
+        text = text.replace(f":{_EMOJI_PLACEHOLDER}{i}:", orig)
+    return text
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,6 +46,60 @@ app = FastAPI(title="Slack EN->DE Translate")
 # In-memory (channel_id, ts) with bounded size; for multi-instance use Redis.
 _MAX_IDEMPOTENCY_SIZE = 10_000
 _processed: OrderedDict[tuple[str, str], None] = OrderedDict()
+
+# Bot user ID for "mention" trigger (fetched once via auth.test)
+_bot_user_id: str | None = None
+
+
+def _get_bot_user_id() -> str | None:
+    """Fetch our bot's user ID from Slack (for mention trigger). Cached after first call."""
+    global _bot_user_id
+    if _bot_user_id is not None:
+        return _bot_user_id
+    if not config.SLACK_BOT_TOKEN:
+        return None
+    try:
+        import httpx
+        r = httpx.post(
+            "https://slack.com/api/auth.test",
+            headers={"Authorization": f"Bearer {config.SLACK_BOT_TOKEN}"},
+            timeout=10.0,
+        )
+        if r.status_code == 200 and r.json().get("ok"):
+            _bot_user_id = r.json().get("user_id")
+            return _bot_user_id
+    except Exception as e:
+        logger.warning("auth.test failed: %s", e)
+    return None
+
+
+def _should_translate_and_strip(text: str) -> str | None:
+    """
+    If we should translate this message, return the text to send to DeepL (possibly stripped of prefix/mention).
+    Otherwise return None.
+    """
+    trigger = config.TRANSLATE_TRIGGER
+    if trigger == "all":
+        return text
+    if trigger == "prefix":
+        prefix = config.TRANSLATE_PREFIX
+        if not prefix or not text.startswith(prefix):
+            return None
+        stripped = text[len(prefix):].strip()
+        return stripped if stripped else None
+    if trigger == "mention":
+        bot_id = _get_bot_user_id()
+        if not bot_id:
+            logger.warning("TRANSLATE_TRIGGER=mention but could not get bot user ID")
+            return None
+        mention = f"<@{bot_id}>"
+        if mention not in text:
+            return None
+        # Remove the mention so we don't translate it; leave the rest
+        stripped = text.replace(mention, " ", 1).strip()
+        stripped = " ".join(stripped.split())  # collapse spaces
+        return stripped if stripped else None
+    return text
 
 
 def _already_processed(channel_id: str, ts: str) -> bool:
@@ -130,10 +205,17 @@ async def slack_events(request: Request) -> Response:
     if _already_processed(channel_id, ts):
         return PlainTextResponse("OK", status_code=200)
 
-    # Translate only when source is English
-    translated = translate_en_to_de(text)
+    # Only translate when trigger matches (all / prefix / mention)
+    text_to_translate = _should_translate_and_strip(text)
+    if text_to_translate is None:
+        return PlainTextResponse("OK", status_code=200)
+
+    # Preserve Slack emoji shortcodes (:Speaker: etc.) so DeepL doesn't translate them
+    text_for_deepl, emoji_shortcodes = _replace_slack_emojis_for_translation(text_to_translate)
+    translated = translate_en_to_de(text_for_deepl)
     if not translated:
         return PlainTextResponse("OK", status_code=200)
+    translated = _restore_slack_emojis(translated, emoji_shortcodes)
 
     # Post as thread reply
     if _post_thread_reply(channel_id, ts, translated):

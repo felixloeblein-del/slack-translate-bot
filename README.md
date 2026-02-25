@@ -43,6 +43,8 @@ Set:
 Optional:
 
 - `SLACK_CHANNEL_IDS` – comma-separated channel IDs; if set, only these channels are translated (default: all channels the bot is in).
+- `TRANSLATE_TRIGGER` – when to translate: `all` (every message, default), `prefix` (only if message starts with `TRANSLATE_PREFIX`), or `mention` (only if the message @mentions the bot).
+- `TRANSLATE_PREFIX` – for `TRANSLATE_TRIGGER=prefix`, only messages starting with this are translated (e.g. `[translate]`); the prefix is stripped before translating.
 
 ### 4. Run locally
 
@@ -188,3 +190,5 @@ Restart the app. Only that channel will be translated.
 - **Language detection**: Only messages detected as English are translated; others are ignored.
 - **Idempotency**: Duplicate events (e.g. Slack retries) are detected so the same message is not translated twice.
 - **Bot messages** and **message subtypes** (e.g. channel_join, edits) are ignored.
+- **Translate only specific messages**: Set `TRANSLATE_TRIGGER=prefix` and `TRANSLATE_PREFIX=[translate]` (or e.g. `#translate`) so only messages that start with that prefix are translated; or set `TRANSLATE_TRIGGER=mention` so only messages that @mention the bot are translated.
+- **Emoji preservation**: Slack emoji shortcodes (e.g. `:Speaker:`, `:wave:`) are replaced with placeholders before sending to DeepL and restored in the reply, so emojis are not translated or broken.

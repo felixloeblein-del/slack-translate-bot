@@ -32,3 +32,8 @@ CHANNEL_IDS_LIST: list[str] = [c.strip() for c in SLACK_CHANNEL_IDS.split(",") i
 
 # Replay attack: reject requests older than this (seconds)
 SLACK_REQUEST_MAX_AGE_SECONDS: int = int(os.environ.get("SLACK_REQUEST_MAX_AGE_SECONDS", "300"))
+
+# When to translate: "all" = every message (default), "prefix" = only if message starts with TRANSLATE_PREFIX, "mention" = only if message @mentions the bot
+TRANSLATE_TRIGGER: str = os.environ.get("TRANSLATE_TRIGGER", "all").strip().lower() or "all"
+# For trigger=prefix: only translate messages that start with this (e.g. "[translate]" or "#translate"). Prefix is stripped before translating.
+TRANSLATE_PREFIX: str = os.environ.get("TRANSLATE_PREFIX", "[translate]").strip()
