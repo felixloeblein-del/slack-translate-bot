@@ -45,7 +45,8 @@ Optional:
 - `SLACK_CHANNEL_IDS` – comma-separated channel IDs; if set, only these channels are translated (default: all channels the bot is in).
 - `TRANSLATE_TRIGGER` – when to translate: `all` (every message, default), `prefix` (only if message starts with `TRANSLATE_PREFIX`), `mention` (only if the message @mentions the bot), or `reaction` (only when someone adds `REACTION_TRIGGER_EMOJI` to a message).
 - `TRANSLATE_PREFIX` – for `TRANSLATE_TRIGGER=prefix`, only messages starting with this are translated (e.g. `[translate]`); the prefix is stripped before translating.
-- `REACTION_TRIGGER_EMOJI` – for `TRANSLATE_TRIGGER=reaction`, the emoji shortcode name without colons (e.g. `globe` for :globe:). Default `globe`.
+- `REACTION_TRIGGER_EMOJI` – for `TRANSLATE_TRIGGER=reaction`, the emoji shortcode name without colons (e.g. `de` for :de:). Default `de`.
+- `EXCLUDE_IF_CONTAINS` – comma-separated phrases; if a message contains any of these (case-insensitive), it is not translated. Default: `translation of the following,assist us with a translation` to skip “translation request” meta-messages.
 
 ### 4. Run locally
 

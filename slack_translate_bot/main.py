@@ -102,6 +102,14 @@ def _should_translate_and_strip(text: str) -> str | None:
     return text
 
 
+def _should_exclude(text: str) -> bool:
+    """True if the message contains any exclude phrase (skip translation)."""
+    if not text or not config.EXCLUDE_PHRASES_LIST:
+        return False
+    lower = text.lower()
+    return any(phrase in lower for phrase in config.EXCLUDE_PHRASES_LIST)
+
+
 def _already_processed(channel_id: str, ts: str) -> bool:
     key = (channel_id, ts)
     if key in _processed:
@@ -244,6 +252,9 @@ async def slack_events(request: Request) -> Response:
         if not text:
             logger.warning("reaction_added: could not fetch message channel=%s ts=%s", channel_id, message_ts)
             return PlainTextResponse("OK", status_code=200)
+        if _should_exclude(text):
+            logger.info("reaction_added: message excluded (contains exclude phrase)")
+            return PlainTextResponse("OK", status_code=200)
         text_for_deepl, emoji_shortcodes = _replace_slack_emojis_for_translation(text)
         translated = translate_en_to_de(text_for_deepl)
         if not translated:
@@ -280,6 +291,8 @@ async def slack_events(request: Request) -> Response:
     # Only translate when trigger matches (all / prefix / mention)
     text_to_translate = _should_translate_and_strip(text)
     if text_to_translate is None:
+        return PlainTextResponse("OK", status_code=200)
+    if _should_exclude(text_to_translate):
         return PlainTextResponse("OK", status_code=200)
 
     # Preserve Slack emoji shortcodes (:Speaker: etc.) so DeepL doesn't translate them
