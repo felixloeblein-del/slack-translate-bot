@@ -1,0 +1,8 @@
+# Slack EN->DE translate bot (standalone project)
+# Install: pip install -r requirements.txt  (use a venv recommended)
+
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+httpx>=0.27.0
+deepl>=1.0.0
+python-dotenv>=1.0.1

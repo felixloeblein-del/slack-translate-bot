@@ -1,0 +1,15 @@
+# Render Blueprint: deploy this repo as a free Web Service.
+# After connecting the repo, add env vars in Dashboard: SLACK_SIGNING_SECRET, SLACK_BOT_TOKEN, DEEPL_API_KEY
+services:
+  - type: web
+    name: slack-translate-bot
+    runtime: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn slack_translate_bot.main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: SLACK_SIGNING_SECRET
+        sync: false
+      - key: SLACK_BOT_TOKEN
+        sync: false
+      - key: DEEPL_API_KEY
+        sync: false
