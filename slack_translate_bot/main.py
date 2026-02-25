@@ -220,10 +220,14 @@ async def slack_events(request: Request) -> Response:
 
     # --- Reaction trigger: translate only when someone adds the trigger emoji to a message ---
     if event.get("type") == "reaction_added":
+        raw_reaction = event.get("reaction") or ""
+        logger.info("reaction_added received: reaction=%r (expecting %r)", raw_reaction, config.REACTION_TRIGGER_EMOJI)
         if config.TRANSLATE_TRIGGER != "reaction":
             return PlainTextResponse("OK", status_code=200)
-        reaction = (event.get("reaction") or "").strip().lower().replace("-", "_")
-        if reaction != config.REACTION_TRIGGER_EMOJI.lower().replace("-", "_"):
+        reaction = raw_reaction.strip().lower().replace("-", "_")
+        expected = config.REACTION_TRIGGER_EMOJI.lower().replace("-", "_")
+        if reaction != expected:
+            logger.info("reaction %r does not match trigger %r; skipping", reaction, expected)
             return PlainTextResponse("OK", status_code=200)
         item = event.get("item") or {}
         if item.get("type") != "message":
@@ -238,6 +242,7 @@ async def slack_events(request: Request) -> Response:
             return PlainTextResponse("OK", status_code=200)
         text = _fetch_message(channel_id, message_ts)
         if not text:
+            logger.warning("reaction_added: could not fetch message channel=%s ts=%s", channel_id, message_ts)
             return PlainTextResponse("OK", status_code=200)
         text_for_deepl, emoji_shortcodes = _replace_slack_emojis_for_translation(text)
         translated = translate_en_to_de(text_for_deepl)
