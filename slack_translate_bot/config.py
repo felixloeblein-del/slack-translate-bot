@@ -40,6 +40,15 @@ TRANSLATE_PREFIX: str = os.environ.get("TRANSLATE_PREFIX", "[translate]").strip(
 # For trigger=reaction: only translate when this emoji is added to a message. Use the shortcode name without colons (e.g. "de" for :de:, "globe" for :globe:).
 REACTION_TRIGGER_EMOJI: str = os.environ.get("REACTION_TRIGGER_EMOJI", "de").strip().lower() or "de"
 
-# If the message contains any of these phrases, only the text *after* the phrase is translated (the preamble like "@here ... translation of the following:" is skipped). Comma-separated, case-insensitive. First match wins.
-EXTRACT_CONTENT_AFTER: str = os.environ.get("EXTRACT_CONTENT_AFTER", "translation of the following:,the following:").strip()
+# If the message contains any of these phrases, only the text *after* the phrase is translated (the preamble is skipped). Comma-separated, case-insensitive. First match wins. Longer phrases are checked first.
+_DEFAULT_EXTRACT = (
+    "Can you please assist us with a translation of the following:,"
+    "Can you translate the following:,"
+    "Please translate the below:,"
+    "translation of the following:,"
+    "the following:"
+)
+EXTRACT_CONTENT_AFTER: str = os.environ.get("EXTRACT_CONTENT_AFTER", _DEFAULT_EXTRACT).strip()
 EXTRACT_PHRASES_LIST: list[str] = [p.strip() for p in EXTRACT_CONTENT_AFTER.split(",") if p.strip()]
+# Sort by length descending so we match the longest phrase first (strip more preamble)
+EXTRACT_PHRASES_LIST.sort(key=len, reverse=True)
