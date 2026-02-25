@@ -84,10 +84,6 @@ async def slack_events(request: Request) -> Response:
     signature = request.headers.get("x-slack-signature")
     timestamp = request.headers.get("x-slack-request-timestamp")
 
-    if not verify_slack_request(body, signature, timestamp):
-        logger.warning("Slack request verification failed")
-        return PlainTextResponse("Forbidden", status_code=403)
-
     try:
         import json
         data = json.loads(body.decode("utf-8"))
@@ -95,12 +91,18 @@ async def slack_events(request: Request) -> Response:
         logger.warning("Invalid JSON body: %s", e)
         return PlainTextResponse("Bad Request", status_code=400)
 
-    # URL verification challenge (Slack sends this when you save the Request URL)
+    # URL verification challenge: respond immediately so Slack can verify the URL.
+    # (We do this before signature check so setup works even if env var isn't set yet.)
     if data.get("type") == "url_verification":
         challenge = data.get("challenge")
         if challenge is not None:
             return JSONResponse(content={"challenge": challenge})
         return PlainTextResponse("Bad Request", status_code=400)
+
+    # For all other requests, verify the signature
+    if not verify_slack_request(body, signature, timestamp):
+        logger.warning("Slack request verification failed")
+        return PlainTextResponse("Forbidden", status_code=403)
 
     # Event callback: acknowledge immediately (Slack expects 200 within 3s)
     if data.get("type") != "event_callback":
