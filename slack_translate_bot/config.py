@@ -33,7 +33,9 @@ CHANNEL_IDS_LIST: list[str] = [c.strip() for c in SLACK_CHANNEL_IDS.split(",") i
 # Replay attack: reject requests older than this (seconds)
 SLACK_REQUEST_MAX_AGE_SECONDS: int = int(os.environ.get("SLACK_REQUEST_MAX_AGE_SECONDS", "300"))
 
-# When to translate: "all" = every message (default), "prefix" = only if message starts with TRANSLATE_PREFIX, "mention" = only if message @mentions the bot
+# When to translate: "all" = every message (default), "prefix" = only if message starts with TRANSLATE_PREFIX, "mention" = only if message @mentions the bot, "reaction" = only when someone adds REACTION_TRIGGER_EMOJI to a message
 TRANSLATE_TRIGGER: str = os.environ.get("TRANSLATE_TRIGGER", "all").strip().lower() or "all"
 # For trigger=prefix: only translate messages that start with this (e.g. "[translate]" or "#translate"). Prefix is stripped before translating.
 TRANSLATE_PREFIX: str = os.environ.get("TRANSLATE_PREFIX", "[translate]").strip()
+# For trigger=reaction: only translate when this emoji is added to a message. Use the shortcode name without colons (e.g. "globe" for :globe:, "speech_balloon" for :speech_balloon:).
+REACTION_TRIGGER_EMOJI: str = os.environ.get("REACTION_TRIGGER_EMOJI", "globe").strip().lower() or "globe"

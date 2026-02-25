@@ -112,6 +112,39 @@ def _already_processed(channel_id: str, ts: str) -> bool:
     return False
 
 
+def _fetch_message(channel_id: str, ts: str) -> str | None:
+    """Fetch a single message by channel and ts. Returns message text or None."""
+    if not config.SLACK_BOT_TOKEN:
+        return None
+    try:
+        import httpx
+    except ImportError:
+        return None
+    try:
+        # ts is like "1234567890.123456"; use inclusive range to get this message
+        r = httpx.post(
+            "https://slack.com/api/conversations.history",
+            headers={"Authorization": f"Bearer {config.SLACK_BOT_TOKEN}"},
+            json={
+                "channel": channel_id,
+                "oldest": ts,
+                "latest": ts,
+                "inclusive": True,
+                "limit": 1,
+            },
+            timeout=10.0,
+        )
+        if r.status_code != 200 or not r.json().get("ok"):
+            return None
+        messages = r.json().get("messages") or []
+        if not messages:
+            return None
+        return (messages[0].get("text") or "").strip()
+    except Exception as e:
+        logger.warning("conversations.history failed: %s", e)
+        return None
+
+
 def _post_thread_reply(channel_id: str, thread_ts: str, text: str) -> bool:
     """Post message to Slack as a thread reply. Returns True on success."""
     if not config.SLACK_BOT_TOKEN:
@@ -184,7 +217,41 @@ async def slack_events(request: Request) -> Response:
         return PlainTextResponse("OK", status_code=200)
 
     event = data.get("event") or {}
+
+    # --- Reaction trigger: translate only when someone adds the trigger emoji to a message ---
+    if event.get("type") == "reaction_added":
+        if config.TRANSLATE_TRIGGER != "reaction":
+            return PlainTextResponse("OK", status_code=200)
+        reaction = (event.get("reaction") or "").strip().lower().replace("-", "_")
+        if reaction != config.REACTION_TRIGGER_EMOJI.lower().replace("-", "_"):
+            return PlainTextResponse("OK", status_code=200)
+        item = event.get("item") or {}
+        if item.get("type") != "message":
+            return PlainTextResponse("OK", status_code=200)
+        channel_id = item.get("channel")
+        message_ts = item.get("ts")
+        if not channel_id or not message_ts:
+            return PlainTextResponse("OK", status_code=200)
+        if config.CHANNEL_IDS_LIST and channel_id not in config.CHANNEL_IDS_LIST:
+            return PlainTextResponse("OK", status_code=200)
+        if _already_processed(channel_id, message_ts):
+            return PlainTextResponse("OK", status_code=200)
+        text = _fetch_message(channel_id, message_ts)
+        if not text:
+            return PlainTextResponse("OK", status_code=200)
+        text_for_deepl, emoji_shortcodes = _replace_slack_emojis_for_translation(text)
+        translated = translate_en_to_de(text_for_deepl)
+        if not translated:
+            return PlainTextResponse("OK", status_code=200)
+        translated = _restore_slack_emojis(translated, emoji_shortcodes)
+        if _post_thread_reply(channel_id, message_ts, translated):
+            logger.info("Posted translation (reaction) for channel=%s ts=%s", channel_id, message_ts)
+        return PlainTextResponse("OK", status_code=200)
+
+    # --- Message trigger: translate on new message (all / prefix / mention) ---
     if event.get("type") != "message":
+        return PlainTextResponse("OK", status_code=200)
+    if config.TRANSLATE_TRIGGER == "reaction":
         return PlainTextResponse("OK", status_code=200)
 
     # Only process new user messages (no bot messages, no subtypes like channel_join)

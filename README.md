@@ -16,7 +16,7 @@ This project lives under `Documents/Repo Destination/slack-translate-bot` and is
 
 1. Create an app at [api.slack.com/apps](https://api.slack.com/apps).
 2. **Event Subscriptions**: Enable, set Request URL to your deployed URL (e.g. `https://your-domain.com/slack/events`). Subscribe to **message.channels** (or use a channel filter).
-3. **OAuth & Permissions**: Add Bot Token Scopes: `channels:history`, `channels:read`, `chat:write`.
+3. **OAuth & Permissions**: Add Bot Token Scopes: `channels:history`, `channels:read`, `chat:write`. If you use `TRANSLATE_TRIGGER=reaction`, also add `reactions:read`.
 4. Install the app to your workspace and **invite the bot to the channel(s)** you want to translate.
 5. Copy **Signing Secret** (Basic Information) and **Bot User OAuth Token** (OAuth & Permissions) into `.env`.
 
@@ -43,8 +43,9 @@ Set:
 Optional:
 
 - `SLACK_CHANNEL_IDS` – comma-separated channel IDs; if set, only these channels are translated (default: all channels the bot is in).
-- `TRANSLATE_TRIGGER` – when to translate: `all` (every message, default), `prefix` (only if message starts with `TRANSLATE_PREFIX`), or `mention` (only if the message @mentions the bot).
+- `TRANSLATE_TRIGGER` – when to translate: `all` (every message, default), `prefix` (only if message starts with `TRANSLATE_PREFIX`), `mention` (only if the message @mentions the bot), or `reaction` (only when someone adds `REACTION_TRIGGER_EMOJI` to a message).
 - `TRANSLATE_PREFIX` – for `TRANSLATE_TRIGGER=prefix`, only messages starting with this are translated (e.g. `[translate]`); the prefix is stripped before translating.
+- `REACTION_TRIGGER_EMOJI` – for `TRANSLATE_TRIGGER=reaction`, the emoji shortcode name without colons (e.g. `globe` for :globe:). Default `globe`.
 
 ### 4. Run locally
 
@@ -190,5 +191,5 @@ Restart the app. Only that channel will be translated.
 - **Language detection**: Only messages detected as English are translated; others are ignored.
 - **Idempotency**: Duplicate events (e.g. Slack retries) are detected so the same message is not translated twice.
 - **Bot messages** and **message subtypes** (e.g. channel_join, edits) are ignored.
-- **Translate only specific messages**: Set `TRANSLATE_TRIGGER=prefix` and `TRANSLATE_PREFIX=[translate]` (or e.g. `#translate`) so only messages that start with that prefix are translated; or set `TRANSLATE_TRIGGER=mention` so only messages that @mention the bot are translated.
+- **Translate only specific messages**: Set `TRANSLATE_TRIGGER=prefix` and `TRANSLATE_PREFIX=[translate]` so only messages that start with that prefix are translated; or `TRANSLATE_TRIGGER=mention` so only messages that @mention the bot are translated; or `TRANSLATE_TRIGGER=reaction` so only when someone adds the trigger emoji (e.g. :globe:) to a message — then add **reaction_added** under Subscribe to bot events and scope **reactions:read**.
 - **Emoji preservation**: Slack emoji shortcodes (e.g. `:Speaker:`, `:wave:`) are replaced with placeholders before sending to DeepL and restored in the reply, so emojis are not translated or broken.
