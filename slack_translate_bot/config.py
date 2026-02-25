@@ -40,6 +40,6 @@ TRANSLATE_PREFIX: str = os.environ.get("TRANSLATE_PREFIX", "[translate]").strip(
 # For trigger=reaction: only translate when this emoji is added to a message. Use the shortcode name without colons (e.g. "de" for :de:, "globe" for :globe:).
 REACTION_TRIGGER_EMOJI: str = os.environ.get("REACTION_TRIGGER_EMOJI", "de").strip().lower() or "de"
 
-# Skip translation if the message contains any of these phrases (comma-separated, case-insensitive). E.g. exclude "translation request" meta-messages.
-EXCLUDE_IF_CONTAINS: str = os.environ.get("EXCLUDE_IF_CONTAINS", "translation of the following,assist us with a translation").strip()
-EXCLUDE_PHRASES_LIST: list[str] = [p.strip().lower() for p in EXCLUDE_IF_CONTAINS.split(",") if p.strip()]
+# If the message contains any of these phrases, only the text *after* the phrase is translated (the preamble like "@here ... translation of the following:" is skipped). Comma-separated, case-insensitive. First match wins.
+EXTRACT_CONTENT_AFTER: str = os.environ.get("EXTRACT_CONTENT_AFTER", "translation of the following:,the following:").strip()
+EXTRACT_PHRASES_LIST: list[str] = [p.strip() for p in EXTRACT_CONTENT_AFTER.split(",") if p.strip()]

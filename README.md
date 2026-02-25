@@ -46,7 +46,7 @@ Optional:
 - `TRANSLATE_TRIGGER` – when to translate: `all` (every message, default), `prefix` (only if message starts with `TRANSLATE_PREFIX`), `mention` (only if the message @mentions the bot), or `reaction` (only when someone adds `REACTION_TRIGGER_EMOJI` to a message).
 - `TRANSLATE_PREFIX` – for `TRANSLATE_TRIGGER=prefix`, only messages starting with this are translated (e.g. `[translate]`); the prefix is stripped before translating.
 - `REACTION_TRIGGER_EMOJI` – for `TRANSLATE_TRIGGER=reaction`, the emoji shortcode name without colons (e.g. `de` for :de:). Default `de`.
-- `EXCLUDE_IF_CONTAINS` – comma-separated phrases; if a message contains any of these (case-insensitive), it is not translated. Default: `translation of the following,assist us with a translation` to skip “translation request” meta-messages.
+- `EXTRACT_CONTENT_AFTER` – comma-separated phrases; if a message contains one, only the text *after* that phrase is translated (so preamble like “@here … translation of the following:” is skipped). Default: `translation of the following:,the following:`.
 
 ### 4. Run locally
 

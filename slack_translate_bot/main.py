@@ -102,12 +102,22 @@ def _should_translate_and_strip(text: str) -> str | None:
     return text
 
 
-def _should_exclude(text: str) -> bool:
-    """True if the message contains any exclude phrase (skip translation)."""
-    if not text or not config.EXCLUDE_PHRASES_LIST:
-        return False
+def _extract_content_to_translate(text: str) -> str:
+    """
+    If the message contains a known preamble phrase (e.g. 'translation of the following:'),
+    return only the text after that phrase so we translate just the content, not the intro.
+    Otherwise return the full text.
+    """
+    if not text or not config.EXTRACT_PHRASES_LIST:
+        return text
     lower = text.lower()
-    return any(phrase in lower for phrase in config.EXCLUDE_PHRASES_LIST)
+    for phrase in config.EXTRACT_PHRASES_LIST:
+        pos = lower.find(phrase.lower())
+        if pos >= 0:
+            after = text[pos + len(phrase) :].strip()
+            if after:
+                return after
+    return text
 
 
 def _already_processed(channel_id: str, ts: str) -> bool:
@@ -252,8 +262,8 @@ async def slack_events(request: Request) -> Response:
         if not text:
             logger.warning("reaction_added: could not fetch message channel=%s ts=%s", channel_id, message_ts)
             return PlainTextResponse("OK", status_code=200)
-        if _should_exclude(text):
-            logger.info("reaction_added: message excluded (contains exclude phrase)")
+        text = _extract_content_to_translate(text)
+        if not text:
             return PlainTextResponse("OK", status_code=200)
         text_for_deepl, emoji_shortcodes = _replace_slack_emojis_for_translation(text)
         translated = translate_en_to_de(text_for_deepl)
@@ -292,7 +302,8 @@ async def slack_events(request: Request) -> Response:
     text_to_translate = _should_translate_and_strip(text)
     if text_to_translate is None:
         return PlainTextResponse("OK", status_code=200)
-    if _should_exclude(text_to_translate):
+    text_to_translate = _extract_content_to_translate(text_to_translate)
+    if not text_to_translate:
         return PlainTextResponse("OK", status_code=200)
 
     # Preserve Slack emoji shortcodes (:Speaker: etc.) so DeepL doesn't translate them
