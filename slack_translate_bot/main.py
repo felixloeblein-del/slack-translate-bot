@@ -34,6 +34,47 @@ def _restore_slack_emojis(text: str, shortcodes: list[str]) -> str:
         text = text.replace(f":{_EMOJI_PLACEHOLDER}{i}:", orig)
     return text
 
+
+def _split_headline_body(text: str) -> tuple[str, str]:
+    """
+    Split l10n-style content into headline (first line) and body (rest).
+    Ensures DeepL translates them separately so the reply keeps two lines.
+    """
+    text = (text or "").strip()
+    if not text:
+        return ("", "")
+    idx = text.find("\n")
+    if idx < 0:
+        return (text, "")
+    headline = text[:idx].strip()
+    body = text[idx + 1 :].strip()
+    return (headline, body)
+
+
+def _translate_headline_and_body(text: str) -> str | None:
+    """
+    Translate extracted content by splitting into headline and body, translating each
+    separately, then rejoining with a newline so the reply keeps headline and body on separate lines.
+    """
+    if not text or not text.strip():
+        return None
+    text_for_deepl, emoji_shortcodes = _replace_slack_emojis_for_translation(text)
+    headline, body = _split_headline_body(text_for_deepl)
+
+    parts: list[str] = []
+    if headline:
+        t = translate_en_to_de(headline)
+        parts.append(t if t else headline)
+    if body:
+        t = translate_en_to_de(body)
+        parts.append(t if t else body)
+
+    if not parts:
+        return None
+    translated = "\n".join(parts)
+    return _restore_slack_emojis(translated, emoji_shortcodes)
+
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -265,11 +306,9 @@ async def slack_events(request: Request) -> Response:
         text = _extract_content_to_translate(text)
         if not text:
             return PlainTextResponse("OK", status_code=200)
-        text_for_deepl, emoji_shortcodes = _replace_slack_emojis_for_translation(text)
-        translated = translate_en_to_de(text_for_deepl)
+        translated = _translate_headline_and_body(text)
         if not translated:
             return PlainTextResponse("OK", status_code=200)
-        translated = _restore_slack_emojis(translated, emoji_shortcodes)
         if _post_thread_reply(channel_id, message_ts, translated):
             logger.info("Posted translation (reaction) for channel=%s ts=%s", channel_id, message_ts)
         return PlainTextResponse("OK", status_code=200)
@@ -306,12 +345,10 @@ async def slack_events(request: Request) -> Response:
     if not text_to_translate:
         return PlainTextResponse("OK", status_code=200)
 
-    # Preserve Slack emoji shortcodes (:Speaker: etc.) so DeepL doesn't translate them
-    text_for_deepl, emoji_shortcodes = _replace_slack_emojis_for_translation(text_to_translate)
-    translated = translate_en_to_de(text_for_deepl)
+    # Translate headline and body separately so the reply keeps them on two lines
+    translated = _translate_headline_and_body(text_to_translate)
     if not translated:
         return PlainTextResponse("OK", status_code=200)
-    translated = _restore_slack_emojis(translated, emoji_shortcodes)
 
     # Post as thread reply
     if _post_thread_reply(channel_id, ts, translated):
