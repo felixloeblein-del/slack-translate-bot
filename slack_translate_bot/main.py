@@ -171,8 +171,12 @@ def _already_processed(channel_id: str, ts: str) -> bool:
     return False
 
 
-def _fetch_message(channel_id: str, ts: str) -> str | None:
-    """Fetch a single message by channel and ts. Returns message text or None."""
+def _fetch_message(channel_id: str, ts: str, thread_ts: str | None = None) -> str | None:
+    """
+    Fetch a single message by channel and ts. Returns message text or None.
+    Tries conversations.history first (channel messages). If not found and thread_ts
+    is provided (reaction on a thread reply), uses conversations.replies to get the message.
+    """
     if not config.SLACK_BOT_TOKEN:
         return None
     try:
@@ -180,7 +184,7 @@ def _fetch_message(channel_id: str, ts: str) -> str | None:
     except ImportError:
         return None
     try:
-        # ts is like "1234567890.123456"; use inclusive range to get this message
+        # 1) Try channel history (works for top-level messages)
         r = httpx.post(
             "https://slack.com/api/conversations.history",
             headers={"Authorization": f"Bearer {config.SLACK_BOT_TOKEN}"},
@@ -193,14 +197,30 @@ def _fetch_message(channel_id: str, ts: str) -> str | None:
             },
             timeout=10.0,
         )
-        if r.status_code != 200 or not r.json().get("ok"):
-            return None
-        messages = r.json().get("messages") or []
-        if not messages:
-            return None
-        return (messages[0].get("text") or "").strip()
+        if r.status_code == 200 and r.json().get("ok"):
+            messages = r.json().get("messages") or []
+            if messages:
+                return (messages[0].get("text") or "").strip()
+
+        # 2) Not in channel history: if this is a thread reply, fetch via conversations.replies
+        if thread_ts:
+            r2 = httpx.post(
+                "https://slack.com/api/conversations.replies",
+                headers={"Authorization": f"Bearer {config.SLACK_BOT_TOKEN}"},
+                json={
+                    "channel": channel_id,
+                    "ts": thread_ts,
+                    "limit": 100,
+                },
+                timeout=10.0,
+            )
+            if r2.status_code == 200 and r2.json().get("ok"):
+                for msg in r2.json().get("messages") or []:
+                    if msg.get("ts") == ts:
+                        return (msg.get("text") or "").strip()
+        return None
     except Exception as e:
-        logger.warning("conversations.history failed: %s", e)
+        logger.warning("fetch_message failed: %s", e)
         return None
 
 
@@ -293,13 +313,15 @@ async def slack_events(request: Request) -> Response:
             return PlainTextResponse("OK", status_code=200)
         channel_id = item.get("channel")
         message_ts = item.get("ts")
+        # thread_ts is set when the reacted message is a reply inside a thread (parent's ts)
+        thread_ts = item.get("thread_ts")
         if not channel_id or not message_ts:
             return PlainTextResponse("OK", status_code=200)
         if config.CHANNEL_IDS_LIST and channel_id not in config.CHANNEL_IDS_LIST:
             return PlainTextResponse("OK", status_code=200)
         if _already_processed(channel_id, message_ts):
             return PlainTextResponse("OK", status_code=200)
-        text = _fetch_message(channel_id, message_ts)
+        text = _fetch_message(channel_id, message_ts, thread_ts=thread_ts)
         if not text:
             logger.warning("reaction_added: could not fetch message channel=%s ts=%s", channel_id, message_ts)
             return PlainTextResponse("OK", status_code=200)
@@ -309,7 +331,9 @@ async def slack_events(request: Request) -> Response:
         translated = _translate_headline_and_body(text)
         if not translated:
             return PlainTextResponse("OK", status_code=200)
-        if _post_thread_reply(channel_id, message_ts, translated):
+        # Post in the same thread: use thread_ts if this was a thread reply, else message_ts (reply to that message)
+        reply_thread_ts = thread_ts if thread_ts else message_ts
+        if _post_thread_reply(channel_id, reply_thread_ts, translated):
             logger.info("Posted translation (reaction) for channel=%s ts=%s", channel_id, message_ts)
         return PlainTextResponse("OK", status_code=200)
 

@@ -1,0 +1,60 @@
+"""
+Tests for _fetch_message: channel messages and thread replies.
+"""
+
+from unittest.mock import patch
+
+import pytest
+
+from slack_translate_bot.main import _fetch_message
+
+
+@patch("httpx.post")
+@patch("slack_translate_bot.main.config")
+def test_fetch_message_from_history(mock_config, mock_post):
+    """Channel message is fetched via conversations.history."""
+    mock_config.SLACK_BOT_TOKEN = "xoxb-fake"
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = {
+        "ok": True,
+        "messages": [{"ts": "123.0", "text": "Hello world"}],
+    }
+    got = _fetch_message("C123", "123.0")
+    assert got == "Hello world"
+    mock_post.assert_called_once()
+    call_json = mock_post.call_args.kwargs["json"]
+    assert call_json.get("channel") == "C123"
+    assert "oldest" in call_json  # history
+
+
+@patch("httpx.post")
+@patch("slack_translate_bot.main.config")
+def test_fetch_message_from_replies_when_not_in_history(mock_config, mock_post):
+    """When message is not in history but thread_ts is set, fetch via conversations.replies."""
+    mock_config.SLACK_BOT_TOKEN = "xoxb-fake"
+    # First call: history returns empty. Second call: replies returns the thread.
+    history_resp = type("R", (), {"status_code": 200, "json": lambda *a, **k: {"ok": True, "messages": []}})()
+    replies_resp = type("R", (), {
+        "status_code": 200,
+        "json": lambda *a, **k: {
+            "ok": True,
+            "messages": [
+                {"ts": "123.0", "text": "Parent"},
+                {"ts": "456.0", "text": "Thread reply to translate"},
+            ],
+        },
+    })()
+    mock_post.side_effect = [history_resp, replies_resp]
+    got = _fetch_message("C123", "456.0", thread_ts="123.0")
+    assert got == "Thread reply to translate"
+    assert mock_post.call_count == 2
+    # Second call should be conversations.replies with thread ts
+    second_call_json = mock_post.call_args_list[1].kwargs["json"]
+    assert second_call_json.get("ts") == "123.0"
+
+
+@patch("slack_translate_bot.main.config")
+def test_fetch_message_returns_none_without_token(mock_config):
+    """Returns None when SLACK_BOT_TOKEN is not set."""
+    mock_config.SLACK_BOT_TOKEN = ""
+    assert _fetch_message("C123", "123.0") is None
