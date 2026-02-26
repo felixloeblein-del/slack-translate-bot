@@ -226,6 +226,11 @@ def _fetch_message(
         # returns invalid_arguments. Use SLACK_USER_TOKEN (user OAuth with channels:history) if set.
         reply_ts = thread_ts or ts
         replies_token = config.SLACK_USER_TOKEN or config.SLACK_BOT_TOKEN
+        using_user_token = bool(config.SLACK_USER_TOKEN)
+        logger.info(
+            "fetch_message: calling conversations.replies with %s",
+            "user token" if using_user_token else "bot token (set SLACK_USER_TOKEN in Render for thread replies in channels)",
+        )
         r2 = httpx.post(
             "https://slack.com/api/conversations.replies",
             headers={"Authorization": f"Bearer {replies_token}"},
