@@ -31,10 +31,15 @@ def test_fetch_message_from_history(mock_config, mock_post):
 @patch("httpx.post")
 @patch("slack_translate_bot.main.config")
 def test_fetch_message_from_replies_when_not_in_history(mock_config, mock_post):
-    """When message is not in history but thread_ts is set, fetch via conversations.replies."""
+    """When message is not in channel history, fetch channel parents then replies with parent ts."""
     mock_config.SLACK_BOT_TOKEN = "xoxb-fake"
-    # First call: history returns empty. Second call: replies returns the thread.
-    history_resp = type("R", (), {"status_code": 200, "json": lambda *a, **k: {"ok": True, "messages": []}})()
+    mock_config.SLACK_USER_TOKEN = ""
+    # Call 1: history (oldest/latest) -> empty. Call 2: history (limit=50) -> one parent. Call 3: replies(parent_ts) -> thread.
+    history_empty = type("R", (), {"status_code": 200, "json": lambda *a, **k: {"ok": True, "messages": []}})()
+    history_parents = type("R", (), {
+        "status_code": 200,
+        "json": lambda *a, **k: {"ok": True, "messages": [{"ts": "123.0", "reply_count": 1}]},
+    })()
     replies_resp = type("R", (), {
         "status_code": 200,
         "json": lambda *a, **k: {
@@ -45,18 +50,18 @@ def test_fetch_message_from_replies_when_not_in_history(mock_config, mock_post):
             ],
         },
     })()
-    mock_post.side_effect = [history_resp, replies_resp]
-    text, reply_ts = _fetch_message("C123", "456.0", thread_ts="123.0")
+    mock_post.side_effect = [history_empty, history_parents, replies_resp]
+    text, reply_ts = _fetch_message("C123", "456.0")
     assert text == "Thread reply to translate"
-    assert reply_ts == "123.0"  # parent thread_ts for posting
-    assert mock_post.call_count == 2
-    # Second call should be conversations.replies with thread ts
-    second_call_json = mock_post.call_args_list[1].kwargs["json"]
-    assert second_call_json.get("ts") == "123.0"
+    assert reply_ts == "123.0"
+    assert mock_post.call_count == 3
+    # Third call is conversations.replies with parent ts
+    assert mock_post.call_args_list[2].kwargs["json"].get("ts") == "123.0"
 
 
 @patch("slack_translate_bot.main.config")
 def test_fetch_message_returns_none_without_token(mock_config):
-    """Returns None when SLACK_BOT_TOKEN is not set."""
+    """Returns None when no token is set."""
     mock_config.SLACK_BOT_TOKEN = ""
+    mock_config.SLACK_USER_TOKEN = ""
     assert _fetch_message("C123", "123.0") == (None, None)

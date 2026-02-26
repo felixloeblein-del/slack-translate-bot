@@ -221,51 +221,57 @@ def _fetch_message(
                 j.get("error", "unknown"),
             )
 
-        # 2) Use conversations.replies: ts can be parent or any message in thread (Slack API).
-        # In public/private channels Slack only allows *user* tokens for this method; bot token
-        # returns invalid_arguments. Use SLACK_USER_TOKEN (user OAuth with channels:history) if set.
-        reply_ts = thread_ts or ts
+        # 2) Use conversations.replies. Slack requires the *parent* message ts for this API
+        # (passing a reply's ts can return invalid_arguments). We don't have parent ts from
+        # reaction_added (Slack doesn't send thread_ts). So: get recent channel history, find
+        # the thread that contains our ts by calling replies for each parent, then return the message.
         replies_token = config.SLACK_USER_TOKEN or config.SLACK_BOT_TOKEN
         using_user_token = bool(config.SLACK_USER_TOKEN)
         logger.info(
-            "fetch_message: calling conversations.replies with %s",
-            "user token" if using_user_token else "bot token (set SLACK_USER_TOKEN in Render for thread replies in channels)",
+            "fetch_message: finding thread for ts=%s using %s",
+            ts,
+            "user token" if using_user_token else "bot token",
         )
-        r2 = httpx.post(
-            "https://slack.com/api/conversations.replies",
-            headers={"Authorization": f"Bearer {replies_token}"},
+        # Get recent channel messages (parents of threads) with user token so we see channel
+        history_token = config.SLACK_USER_TOKEN or config.SLACK_BOT_TOKEN
+        r_history = httpx.post(
+            "https://slack.com/api/conversations.history",
+            headers={"Authorization": f"Bearer {history_token}"},
             json={
                 "channel": channel_id,
-                "ts": reply_ts,
-                "limit": 100,
+                "limit": 50,
             },
             timeout=10.0,
         )
-        j2 = r2.json()
-        if r2.status_code != 200 or not j2.get("ok"):
-            err = j2.get("error", "")
-            logger.warning(
-                "fetch_message: conversations.replies failed channel=%s ts=%s error=%s",
-                channel_id,
-                reply_ts,
-                err,
-            )
-            if err in ("invalid_arguments", "method_not_supported_for_channel_type") and not config.SLACK_USER_TOKEN:
-                logger.warning(
-                    "For reaction-on-thread-reply in channels, set SLACK_USER_TOKEN (user OAuth token with channels:history). See README.",
-                )
+        if r_history.status_code != 200 or not r_history.json().get("ok"):
+            logger.warning("fetch_message: history failed for channel=%s", channel_id)
             return (None, None)
-        for msg in j2.get("messages") or []:
-            if msg.get("ts") == ts:
-                text = (msg.get("text") or "").strip()
-                # Use parent thread_ts for posting so reply appears in same thread
-                post_thread_ts = msg.get("thread_ts") or ts
-                return (text, post_thread_ts)
-        logger.warning(
-            "fetch_message: ts=%s not found in replies (count=%s)",
-            ts,
-            len(j2.get("messages") or []),
-        )
+        for parent in r_history.json().get("messages") or []:
+            parent_ts = parent.get("ts")
+            if not parent_ts:
+                continue
+            # Skip if this message is not a thread parent (no replies)
+            if not parent.get("reply_count", 0) and not parent.get("replies"):
+                continue
+            r2 = httpx.post(
+                "https://slack.com/api/conversations.replies",
+                headers={"Authorization": f"Bearer {replies_token}"},
+                json={
+                    "channel": channel_id,
+                    "ts": str(parent_ts),
+                    "limit": 15,
+                },
+                timeout=10.0,
+            )
+            j2 = r2.json()
+            if r2.status_code != 200 or not j2.get("ok"):
+                continue
+            for msg in j2.get("messages") or []:
+                if msg.get("ts") == ts or msg.get("ts") == str(ts):
+                    text = (msg.get("text") or "").strip()
+                    post_thread_ts = msg.get("thread_ts") or parent_ts
+                    return (text, post_thread_ts)
+        logger.warning("fetch_message: ts=%s not found in any thread (checked recent channel messages)", ts)
         return (None, None)
     except Exception as e:
         logger.warning("fetch_message failed: %s", e)
