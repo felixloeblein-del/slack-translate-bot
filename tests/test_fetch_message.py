@@ -19,8 +19,9 @@ def test_fetch_message_from_history(mock_config, mock_post):
         "ok": True,
         "messages": [{"ts": "123.0", "text": "Hello world"}],
     }
-    got = _fetch_message("C123", "123.0")
-    assert got == "Hello world"
+    text, reply_ts = _fetch_message("C123", "123.0")
+    assert text == "Hello world"
+    assert reply_ts == "123.0"
     mock_post.assert_called_once()
     call_json = mock_post.call_args.kwargs["json"]
     assert call_json.get("channel") == "C123"
@@ -40,13 +41,14 @@ def test_fetch_message_from_replies_when_not_in_history(mock_config, mock_post):
             "ok": True,
             "messages": [
                 {"ts": "123.0", "text": "Parent"},
-                {"ts": "456.0", "text": "Thread reply to translate"},
+                {"ts": "456.0", "thread_ts": "123.0", "text": "Thread reply to translate"},
             ],
         },
     })()
     mock_post.side_effect = [history_resp, replies_resp]
-    got = _fetch_message("C123", "456.0", thread_ts="123.0")
-    assert got == "Thread reply to translate"
+    text, reply_ts = _fetch_message("C123", "456.0", thread_ts="123.0")
+    assert text == "Thread reply to translate"
+    assert reply_ts == "123.0"  # parent thread_ts for posting
     assert mock_post.call_count == 2
     # Second call should be conversations.replies with thread ts
     second_call_json = mock_post.call_args_list[1].kwargs["json"]
@@ -57,4 +59,4 @@ def test_fetch_message_from_replies_when_not_in_history(mock_config, mock_post):
 def test_fetch_message_returns_none_without_token(mock_config):
     """Returns None when SLACK_BOT_TOKEN is not set."""
     mock_config.SLACK_BOT_TOKEN = ""
-    assert _fetch_message("C123", "123.0") is None
+    assert _fetch_message("C123", "123.0") == (None, None)
