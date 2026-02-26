@@ -1,0 +1,70 @@
+---
+description: Format and scope for translating market headlines and bodies (l10n)
+alwaysApply: false
+globs: 
+---
+
+# l10n translation format (headline + body)
+
+Use this when translating market/news-style messages (e.g. for Slack l10n): only the **headline** and **body** are translated; the **request line** is left unchanged.
+
+## Do NOT translate
+
+- The **request line**, e.g.:
+  - `@here Can you please assist us with a translation of the following:`
+  - `@here Can you please assist with translating the following:`
+- Leave it exactly as written in the source language.
+
+## DO translate
+
+### 1. Headline (emoji + short phrase)
+
+- **Format**: `:emoji_name: Short phrase`
+- **Keep unchanged**: The emoji token exactly as-is (e.g. `:loudspeaker:`, `:chart_with_downwards_trend:`, `:chocolate_bar:`).
+- **Translate**: Only the short phrase after the emoji (a few words).
+- **Tickers/symbols**: Keep ticker symbols in the headline (e.g. NESN, DBX, GRMN, CVNA, OPEN).
+
+**Examples**
+
+| Source | Translated (e.g. DE) |
+|--------|----------------------|
+| `:loudspeaker: Precious metals rally` | `:loudspeaker: Edelmetalle erholen sich` |
+| `:chocolate_bar: NESN advances` | `:chocolate_bar: NESN macht Fortschritte` |
+| `:chart_with_downwards_trend: DBX tumbles` | `:chart_with_downwards_trend: DBX stürzt ab` |
+| `:rotating_light: Tech stocks advance` | `:rotating_light: Tech-Aktien legen zu` |
+| `:newspaper: Precious metals rush` | Translate "Precious metals rush" only |
+
+### 2. Body (one sentence)
+
+- **Translate**: The full sentence below the headline.
+- **Keep**: Ticker symbols, company names (optional to localise, e.g. Nestle → Nestlé where appropriate).
+- **Numbers and percentages**: Use target locale (e.g. for German: `2.4%` → `2,4 %`, `3.6%` → `3,6 %`).
+
+**Examples**
+
+| Source | Translated (e.g. DE) |
+|--------|----------------------|
+| Gold +2.4%, Silver +6% rebound from one-week lows on safe-haven demand. | Gold +2,4 %, Silber +6 % erholen sich von einer Woche Tiefstständen aufgrund der Nachfrage nach sicheren Anlagen. |
+| Nestle jumps 3.6% as advanced talks to sell its ice cream business to Froneri lift sentiment. | Nestlé legt um 3,6 % zu, da fortgeschrittene Gespräche über den Verkauf seines Eisgeschäfts an Froneri die Stimmung heben. |
+| Dropbox drops 4.2% as soft outlook overshadows modest earnings beat. | Dropbox fällt um 4,2 %, da schwache Aussichten die leicht über den Erwartungen liegenden Gewinne überschatten. |
+
+## Output format
+
+When you produce a translation, output **only** the translated parts in this structure:
+
+```
+:emoji: Translated headline
+Translated body sentence.
+```
+
+If there are **multiple** headline+body pairs in one request, translate each pair and keep the same order:
+
+```
+:emoji1: Translated headline 1
+Translated body 1.
+
+:emoji2: Translated headline 2
+Translated body 2.
+```
+
+Do **not** repeat or translate the "@here Can you please assist…" line in the output.

@@ -194,3 +194,16 @@ Restart the app. Only that channel will be translated.
 - **Bot messages** and **message subtypes** (e.g. channel_join, edits) are ignored.
 - **Translate only specific messages**: Set `TRANSLATE_TRIGGER=prefix` and `TRANSLATE_PREFIX=[translate]` so only messages that start with that prefix are translated; or `TRANSLATE_TRIGGER=mention` so only messages that @mention the bot are translated; or `TRANSLATE_TRIGGER=reaction` so only when someone adds the trigger emoji (e.g. :globe:) to a message — then add **reaction_added** under Subscribe to bot events and scope **reactions:read**.
 - **Emoji preservation**: Slack emoji shortcodes (e.g. `:Speaker:`, `:wave:`) are replaced with placeholders before sending to DeepL and restored in the reply, so emojis are not translated or broken.
+
+## Translation format (l10n)
+
+For market/news-style messages (e.g. in an l10n channel), the bot is intended to translate only **headline** and **body**; the **request line** is not translated.
+
+- **Do not translate**: The request line (e.g. “@here Can you please assist us with a translation of the following:”). Use `EXTRACT_CONTENT_AFTER` (see Environment) so only the content after that phrase is sent to DeepL.
+- **Translate**:
+  1. **Headline**: Line in the form `:emoji: Short phrase` — keep the emoji token as-is, translate only the short phrase. Keep ticker symbols (e.g. NESN, DBX) in the headline.
+  2. **Body**: The sentence below the headline. Keep tickers; use target locale for numbers (e.g. German: `2.4%` → `2,4 %`).
+
+**Output format**: The thread reply should contain only the translated parts, one line for the headline and one for the body (and repeat for multiple headline+body pairs). Do not repeat or translate the “@here …” line.
+
+A full specification with examples is in [.cursor/rules/l10n-translation-format.mdc](.cursor/rules/l10n-translation-format.mdc) for Cursor/AI-assisted translation workflows.
