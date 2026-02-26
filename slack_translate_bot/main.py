@@ -221,44 +221,39 @@ def _fetch_message(
                 j.get("error", "unknown"),
             )
 
-        # 2) Use conversations.replies. Slack requires the *parent* message ts for this API
-        # (passing a reply's ts can return invalid_arguments). We don't have parent ts from
-        # reaction_added (Slack doesn't send thread_ts). So: get recent channel history, find
-        # the thread that contains our ts by calling replies for each parent, then return the message.
+        # 2) Use conversations.replies. Slack requires the *parent* message ts. We don't have it
+        # from reaction_added. So: get channel history with BOT token (bot is in channel), then
+        # for each message call replies (user token) to get its thread and look for our ts.
         replies_token = config.SLACK_USER_TOKEN or config.SLACK_BOT_TOKEN
-        using_user_token = bool(config.SLACK_USER_TOKEN)
-        logger.info(
-            "fetch_message: finding thread for ts=%s using %s",
-            ts,
-            "user token" if using_user_token else "bot token",
-        )
-        # Get recent channel messages (parents of threads) with user token so we see channel
-        history_token = config.SLACK_USER_TOKEN or config.SLACK_BOT_TOKEN
+        ts_str = str(ts).strip()
+        logger.info("fetch_message: finding thread for ts=%s", ts_str)
+        # Bot token for history so we see the same channel messages as the bot
         r_history = httpx.post(
             "https://slack.com/api/conversations.history",
-            headers={"Authorization": f"Bearer {history_token}"},
+            headers={"Authorization": f"Bearer {config.SLACK_BOT_TOKEN}"},
             json={
                 "channel": channel_id,
-                "limit": 50,
+                "limit": 80,
             },
             timeout=10.0,
         )
         if r_history.status_code != 200 or not r_history.json().get("ok"):
             logger.warning("fetch_message: history failed for channel=%s", channel_id)
             return (None, None)
-        for parent in r_history.json().get("messages") or []:
+        messages = r_history.json().get("messages") or []
+        logger.info("fetch_message: got %s channel messages, checking up to 25 for thread containing ts=%s", len(messages), ts_str)
+        # Call replies for every message (reply_count can be missing in history); cap at 25 to limit API use
+        for parent in messages[:25]:
             parent_ts = parent.get("ts")
             if not parent_ts:
                 continue
-            # Skip if this message is not a thread parent (no replies)
-            if not parent.get("reply_count", 0) and not parent.get("replies"):
-                continue
+            parent_ts_str = str(parent_ts).strip()
             r2 = httpx.post(
                 "https://slack.com/api/conversations.replies",
                 headers={"Authorization": f"Bearer {replies_token}"},
                 json={
                     "channel": channel_id,
-                    "ts": str(parent_ts),
+                    "ts": parent_ts_str,
                     "limit": 15,
                 },
                 timeout=10.0,
@@ -267,11 +262,18 @@ def _fetch_message(
             if r2.status_code != 200 or not j2.get("ok"):
                 continue
             for msg in j2.get("messages") or []:
-                if msg.get("ts") == ts or msg.get("ts") == str(ts):
+                msg_ts = msg.get("ts")
+                if msg_ts is None:
+                    continue
+                if str(msg_ts).strip() == ts_str:
                     text = (msg.get("text") or "").strip()
-                    post_thread_ts = msg.get("thread_ts") or parent_ts
+                    post_thread_ts = msg.get("thread_ts") or parent_ts_str
                     return (text, post_thread_ts)
-        logger.warning("fetch_message: ts=%s not found in any thread (checked recent channel messages)", ts)
+        logger.warning(
+            "fetch_message: ts=%s not found in any of %s recent channel messages",
+            ts_str,
+            min(25, len(messages)),
+        )
         return (None, None)
     except Exception as e:
         logger.warning("fetch_message failed: %s", e)
