@@ -197,10 +197,24 @@ def _fetch_message(channel_id: str, ts: str, thread_ts: str | None = None) -> st
             },
             timeout=10.0,
         )
-        if r.status_code == 200 and r.json().get("ok"):
-            messages = r.json().get("messages") or []
+        j = r.json()
+        if r.status_code == 200 and j.get("ok"):
+            messages = j.get("messages") or []
             if messages:
                 return (messages[0].get("text") or "").strip()
+            # ok=True but empty: message may be too old or outside history limit
+            logger.warning(
+                "fetch_message: conversations.history ok but empty for channel=%s ts=%s (message may be old or channel may be private; add groups:history for private channels)",
+                channel_id,
+                ts,
+            )
+        elif r.status_code == 200 and not j.get("ok"):
+            logger.warning(
+                "fetch_message: conversations.history error channel=%s ts=%s error=%s (e.g. not_in_channel, missing_scope, channel_not_found; private channels need groups:history)",
+                channel_id,
+                ts,
+                j.get("error", "unknown"),
+            )
 
         # 2) Not in channel history: if this is a thread reply, fetch via conversations.replies
         if not thread_ts:
