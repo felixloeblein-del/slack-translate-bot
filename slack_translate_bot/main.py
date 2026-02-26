@@ -203,21 +203,41 @@ def _fetch_message(channel_id: str, ts: str, thread_ts: str | None = None) -> st
                 return (messages[0].get("text") or "").strip()
 
         # 2) Not in channel history: if this is a thread reply, fetch via conversations.replies
-        if thread_ts:
-            r2 = httpx.post(
-                "https://slack.com/api/conversations.replies",
-                headers={"Authorization": f"Bearer {config.SLACK_BOT_TOKEN}"},
-                json={
-                    "channel": channel_id,
-                    "ts": thread_ts,
-                    "limit": 100,
-                },
-                timeout=10.0,
+        if not thread_ts:
+            logger.debug(
+                "fetch_message: message ts=%s not in history and no thread_ts (reaction may be on thread reply; Slack should send item.thread_ts)",
+                ts,
             )
-            if r2.status_code == 200 and r2.json().get("ok"):
-                for msg in r2.json().get("messages") or []:
-                    if msg.get("ts") == ts:
-                        return (msg.get("text") or "").strip()
+            return None
+        r2 = httpx.post(
+            "https://slack.com/api/conversations.replies",
+            headers={"Authorization": f"Bearer {config.SLACK_BOT_TOKEN}"},
+            json={
+                "channel": channel_id,
+                "ts": thread_ts,
+                "limit": 100,
+            },
+            timeout=10.0,
+        )
+        if r2.status_code != 200 or not r2.json().get("ok"):
+            logger.warning(
+                "fetch_message: conversations.replies failed channel=%s thread_ts=%s status=%s ok=%s error=%s",
+                channel_id,
+                thread_ts,
+                r2.status_code,
+                r2.json().get("ok"),
+                r2.json().get("error", ""),
+            )
+            return None
+        for msg in r2.json().get("messages") or []:
+            if msg.get("ts") == ts:
+                return (msg.get("text") or "").strip()
+        logger.warning(
+            "fetch_message: ts=%s not found in thread thread_ts=%s (replies count=%s)",
+            ts,
+            thread_ts,
+            len(r2.json().get("messages") or []),
+        )
         return None
     except Exception as e:
         logger.warning("fetch_message failed: %s", e)
@@ -323,7 +343,12 @@ async def slack_events(request: Request) -> Response:
             return PlainTextResponse("OK", status_code=200)
         text = _fetch_message(channel_id, message_ts, thread_ts=thread_ts)
         if not text:
-            logger.warning("reaction_added: could not fetch message channel=%s ts=%s", channel_id, message_ts)
+            logger.warning(
+                "reaction_added: could not fetch message channel=%s ts=%s thread_ts=%s (if thread_ts is None, reaction was on channel message; check scopes or see fetch_message logs)",
+                channel_id,
+                message_ts,
+                thread_ts,
+            )
             return PlainTextResponse("OK", status_code=200)
         text = _extract_content_to_translate(text)
         if not text:
