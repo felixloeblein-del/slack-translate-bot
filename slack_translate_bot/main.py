@@ -221,11 +221,14 @@ def _fetch_message(
                 j.get("error", "unknown"),
             )
 
-        # 2) Use conversations.replies: ts can be parent or any message in thread (Slack API)
+        # 2) Use conversations.replies: ts can be parent or any message in thread (Slack API).
+        # In public/private channels Slack only allows *user* tokens for this method; bot token
+        # returns invalid_arguments. Use SLACK_USER_TOKEN (user OAuth with channels:history) if set.
         reply_ts = thread_ts or ts
+        replies_token = config.SLACK_USER_TOKEN or config.SLACK_BOT_TOKEN
         r2 = httpx.post(
             "https://slack.com/api/conversations.replies",
-            headers={"Authorization": f"Bearer {config.SLACK_BOT_TOKEN}"},
+            headers={"Authorization": f"Bearer {replies_token}"},
             json={
                 "channel": channel_id,
                 "ts": reply_ts,
@@ -235,13 +238,17 @@ def _fetch_message(
         )
         j2 = r2.json()
         if r2.status_code != 200 or not j2.get("ok"):
+            err = j2.get("error", "")
             logger.warning(
-                "fetch_message: conversations.replies failed channel=%s ts=%s status=%s error=%s",
+                "fetch_message: conversations.replies failed channel=%s ts=%s error=%s",
                 channel_id,
                 reply_ts,
-                r2.status_code,
-                j2.get("error", ""),
+                err,
             )
+            if err in ("invalid_arguments", "method_not_supported_for_channel_type") and not config.SLACK_USER_TOKEN:
+                logger.warning(
+                    "For reaction-on-thread-reply in channels, set SLACK_USER_TOKEN (user OAuth token with channels:history). See README.",
+                )
             return (None, None)
         for msg in j2.get("messages") or []:
             if msg.get("ts") == ts:

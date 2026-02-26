@@ -25,6 +25,11 @@ SLACK_SIGNING_SECRET: str = os.environ.get("SLACK_SIGNING_SECRET", "")
 SLACK_BOT_TOKEN: str = os.environ.get("SLACK_BOT_TOKEN", "")
 DEEPL_API_KEY: str = os.environ.get("DEEPL_API_KEY", "")
 
+# Optional: for reaction-on-thread-reply in public/private channels. Slack only allows user tokens
+# to call conversations.replies in channels (bot token works in DMs only). Set to a user OAuth
+# token with channels:history (and groups:history for private channels) to fetch thread replies.
+SLACK_USER_TOKEN: str = os.environ.get("SLACK_USER_TOKEN", "").strip()
+
 # Optional: restrict to specific channel IDs (comma-separated). Empty = all channels the app is in.
 SLACK_CHANNEL_IDS: str = os.environ.get("SLACK_CHANNEL_IDS", "")
 # Parsed list (empty list = no filter = all channels)
