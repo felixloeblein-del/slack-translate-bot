@@ -248,27 +248,35 @@ def _fetch_message(
             if not parent_ts:
                 continue
             parent_ts_str = str(parent_ts).strip()
-            r2 = httpx.post(
-                "https://slack.com/api/conversations.replies",
-                headers={"Authorization": f"Bearer {replies_token}"},
-                json={
+            cursor = None
+            for _ in range(5):  # up to 5 pages of replies per thread (75 replies)
+                payload = {
                     "channel": channel_id,
                     "ts": parent_ts_str,
                     "limit": 15,
-                },
-                timeout=10.0,
-            )
-            j2 = r2.json()
-            if r2.status_code != 200 or not j2.get("ok"):
-                continue
-            for msg in j2.get("messages") or []:
-                msg_ts = msg.get("ts")
-                if msg_ts is None:
-                    continue
-                if str(msg_ts).strip() == ts_str:
-                    text = (msg.get("text") or "").strip()
-                    post_thread_ts = msg.get("thread_ts") or parent_ts_str
-                    return (text, post_thread_ts)
+                }
+                if cursor:
+                    payload["cursor"] = cursor
+                r2 = httpx.post(
+                    "https://slack.com/api/conversations.replies",
+                    headers={"Authorization": f"Bearer {replies_token}"},
+                    json=payload,
+                    timeout=10.0,
+                )
+                j2 = r2.json()
+                if r2.status_code != 200 or not j2.get("ok"):
+                    break
+                for msg in j2.get("messages") or []:
+                    msg_ts = msg.get("ts")
+                    if msg_ts is None:
+                        continue
+                    if str(msg_ts).strip() == ts_str:
+                        text = (msg.get("text") or "").strip()
+                        post_thread_ts = msg.get("thread_ts") or parent_ts_str
+                        return (text, post_thread_ts)
+                cursor = (j2.get("response_metadata") or {}).get("next_cursor")
+                if not cursor:
+                    break
         logger.warning(
             "fetch_message: ts=%s not found in any of %s recent channel messages",
             ts_str,
