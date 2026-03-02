@@ -168,6 +168,60 @@ def _message_has_reaction(message: dict, reaction_name: str) -> bool:
     return False
 
 
+def _fetch_message_reactions(channel_id: str, message_ts: str) -> list[dict] | None:
+    """
+    Fetch current reactions for a message via reactions.get.
+    Returns list of reaction dicts, or None if unavailable/error.
+    """
+    if not config.SLACK_BOT_TOKEN:
+        return None
+    try:
+        import httpx
+    except ImportError:
+        return None
+    try:
+        r = httpx.post(
+            "https://slack.com/api/reactions.get",
+            headers={"Authorization": f"Bearer {config.SLACK_BOT_TOKEN}"},
+            data={"channel": channel_id, "timestamp": message_ts, "full": False},
+            timeout=10.0,
+        )
+        j = r.json()
+        if r.status_code == 200 and j.get("ok"):
+            message_obj = j.get("message") or {}
+            return message_obj.get("reactions") or []
+        logger.warning(
+            "reactions.get failed channel=%s ts=%s error=%s",
+            channel_id,
+            message_ts,
+            j.get("error", "unknown"),
+        )
+    except Exception as e:
+        logger.warning("reactions.get request failed channel=%s ts=%s err=%s", channel_id, message_ts, e)
+    return None
+
+
+def _message_has_trigger_reaction(
+    channel_id: str,
+    message_ts: str,
+    reaction_name: str,
+    edited_message: dict,
+    previous_message: dict,
+) -> bool:
+    """
+    Decide whether trigger emoji is currently on the edited message.
+    Slack may omit reactions in message_changed payload, so fallback to reactions.get.
+    """
+    if edited_message.get("reactions") is not None:
+        return _message_has_reaction(edited_message, reaction_name)
+    if previous_message.get("reactions") is not None:
+        return _message_has_reaction(previous_message, reaction_name)
+    live_reactions = _fetch_message_reactions(channel_id, message_ts)
+    if live_reactions is None:
+        return False
+    return _message_has_reaction({"reactions": live_reactions}, reaction_name)
+
+
 def _extract_content_to_translate(text: str) -> str:
     """
     If the message contains a known preamble phrase (e.g. 'translation of the following:'),
@@ -585,17 +639,25 @@ async def slack_events(request: Request) -> Response:
         message_ts = edited_message.get("ts") or previous_message.get("ts")
         if not channel_id or not message_ts:
             return PlainTextResponse("OK", status_code=200)
+        logger.info("message_changed received for reaction mode channel=%s ts=%s", channel_id, message_ts)
         if config.CHANNEL_IDS_LIST and channel_id not in config.CHANNEL_IDS_LIST:
             return PlainTextResponse("OK", status_code=200)
         if edited_message.get("bot_id") or previous_message.get("bot_id"):
             return PlainTextResponse("OK", status_code=200)
 
-        reaction_source = (
-            edited_message
-            if edited_message.get("reactions") is not None
-            else previous_message
-        )
-        if not _message_has_reaction(reaction_source, config.REACTION_TRIGGER_EMOJI):
+        if not _message_has_trigger_reaction(
+            channel_id,
+            str(message_ts),
+            config.REACTION_TRIGGER_EMOJI,
+            edited_message,
+            previous_message,
+        ):
+            logger.info(
+                "message_changed: trigger reaction %r not present channel=%s ts=%s; skipping",
+                config.REACTION_TRIGGER_EMOJI,
+                channel_id,
+                message_ts,
+            )
             return PlainTextResponse("OK", status_code=200)
 
         edit_marker = str(
