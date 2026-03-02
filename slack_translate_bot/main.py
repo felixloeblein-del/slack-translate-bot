@@ -232,6 +232,8 @@ def _fetch_message(
         history_token = user_token or config.SLACK_BOT_TOKEN
         is_channel = channel_id.startswith(("C", "G"))
         replies_token = user_token or config.SLACK_BOT_TOKEN
+        replies_token_kind = "user" if user_token else "bot"
+        history_token_kind = "user" if user_token else "bot"
         if is_channel and not user_token:
             logger.warning(
                 "fetch_message: SLACK_USER_TOKEN is not set; conversations.replies on channel threads may fail"
@@ -281,9 +283,11 @@ def _fetch_message(
                 j2 = r2.json()
                 if r2.status_code != 200 or not j2.get("ok"):
                     logger.warning(
-                        "fetch_message: conversations.replies error channel=%s ts=%s error=%s",
+                        "fetch_message: conversations.replies error channel=%s ts=%s token=%s limit=%s error=%s",
                         channel_id,
                         anchor_ts,
+                        replies_token_kind,
+                        _SLACK_REPLIES_LIMIT,
                         j2.get("error", "unknown"),
                     )
                     return ("error", None, None)
@@ -342,8 +346,10 @@ def _fetch_message(
             j_history = r_history.json()
             if r_history.status_code != 200 or not j_history.get("ok"):
                 logger.warning(
-                    "fetch_message: conversations.history error channel=%s error=%s",
+                    "fetch_message: conversations.history error channel=%s token=%s limit=%s error=%s",
                     channel_id,
+                    history_token_kind,
+                    _SLACK_HISTORY_LIMIT,
                     j_history.get("error", "unknown"),
                 )
                 break
