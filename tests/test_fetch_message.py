@@ -56,6 +56,46 @@ def test_fetch_message_from_replies_when_not_in_history(mock_config, mock_post):
     assert replies_call.kwargs["headers"]["Authorization"] == "Bearer xoxp-fake"
 
 
+@patch("httpx.post")
+@patch("slack_translate_bot.main.config")
+def test_fetch_message_falls_back_to_parent_discovery_on_invalid_arguments(mock_config, mock_post):
+    """When replies(reply_ts) fails, resolve parent via history and fetch from replies(parent_ts)."""
+    mock_config.SLACK_BOT_TOKEN = "xoxb-fake"
+    mock_config.SLACK_USER_TOKEN = "xoxp-fake"
+
+    history_empty = type("R", (), {"status_code": 200, "json": lambda *a, **k: {"ok": True, "messages": []}})()
+    replies_invalid = type("R", (), {
+        "status_code": 200,
+        "json": lambda *a, **k: {"ok": False, "error": "invalid_arguments"},
+    })()
+    history_parents = type("R", (), {
+        "status_code": 200,
+        "json": lambda *a, **k: {"ok": True, "messages": [{"ts": "123.0", "reply_count": 3}]},
+    })()
+    replies_parent = type("R", (), {
+        "status_code": 200,
+        "json": lambda *a, **k: {
+            "ok": True,
+            "messages": [
+                {"ts": "123.0", "text": "Parent"},
+                {"ts": "456.0", "thread_ts": "123.0", "text": "Thread reply via fallback"},
+            ],
+        },
+    })()
+    mock_post.side_effect = [history_empty, replies_invalid, history_parents, replies_parent]
+
+    text, reply_ts = _fetch_message("C123", "456.0")
+    assert text == "Thread reply via fallback"
+    assert reply_ts == "123.0"
+    assert mock_post.call_count == 4
+    # Fallback history lookup should use user token when available.
+    history_fallback_call = mock_post.call_args_list[2]
+    assert history_fallback_call.kwargs["headers"]["Authorization"] == "Bearer xoxp-fake"
+    # Final fallback replies call should anchor on the parent ts.
+    replies_fallback_call = mock_post.call_args_list[3]
+    assert replies_fallback_call.kwargs["json"].get("ts") == "123.0"
+
+
 @patch("slack_translate_bot.main.config")
 def test_fetch_message_returns_none_without_token(mock_config):
     """Returns None when no token is set."""

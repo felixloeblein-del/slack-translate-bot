@@ -179,9 +179,9 @@ def _fetch_message(
     Returns (message_text, reply_thread_ts). reply_thread_ts is the thread_ts to use
     when posting the translation reply (parent message ts for threads, or message ts for channel messages).
 
-    Tries conversations.history first (channel messages). If not found, uses
-    conversations.replies with the reacted message ts directly. Slack accepts a
-    thread parent ts or a reply ts for this method.
+    Tries conversations.history first (channel messages). If not found, tries
+    conversations.replies directly, then falls back to parent discovery
+    (history + replies) for workspaces where replies(ts=reply_ts) is rejected.
     """
     if not config.SLACK_BOT_TOKEN:
         return (None, None)
@@ -221,70 +221,166 @@ def _fetch_message(
                 j.get("error", "unknown"),
             )
 
-        # 2) Use conversations.replies directly with the reacted message ts.
-        # This avoids expensive parent scanning and works for both parent and reply ts.
+        # 2) Try conversations.replies directly with the reacted message ts.
+        # Some workspaces accept reply ts anchors; if that fails, we fall back to parent discovery.
         ts_str = str(ts).strip()
+        user_token = (config.SLACK_USER_TOKEN or "").strip()
+        history_token = user_token or config.SLACK_BOT_TOKEN
         is_channel = channel_id.startswith(("C", "G"))
-        replies_token = config.SLACK_USER_TOKEN or config.SLACK_BOT_TOKEN
-        if is_channel and not config.SLACK_USER_TOKEN:
+        replies_token = user_token or config.SLACK_BOT_TOKEN
+        if is_channel and not user_token:
             logger.warning(
                 "fetch_message: SLACK_USER_TOKEN is not set; conversations.replies on channel threads may fail"
             )
 
-        def _fetch_via_replies(anchor_ts: str) -> tuple[str | None, str | None]:
-            payload = {
-                "channel": channel_id,
-                "ts": anchor_ts,
-                "oldest": ts_str,
-                "latest": ts_str,
-                "inclusive": True,
-                "limit": 1,
-            }
-            r2 = httpx.post(
-                "https://slack.com/api/conversations.replies",
-                headers={"Authorization": f"Bearer {replies_token}"},
-                json=payload,
-                timeout=10.0,
-            )
-            if r2.status_code == 429:
-                retry_after = getattr(r2, "headers", {}).get("Retry-After", "?")
-                logger.warning(
-                    "fetch_message: conversations.replies rate limited channel=%s ts=%s retry_after=%s",
-                    channel_id,
-                    anchor_ts,
-                    retry_after,
-                )
-                return (None, None)
-            j2 = r2.json()
-            if r2.status_code != 200 or not j2.get("ok"):
-                logger.warning(
-                    "fetch_message: conversations.replies error channel=%s ts=%s error=%s",
-                    channel_id,
-                    anchor_ts,
-                    j2.get("error", "unknown"),
-                )
-                return (None, None)
-            messages = j2.get("messages") or []
-            if not messages:
-                return (None, None)
-            msg = messages[0]
-            text = (msg.get("text") or "").strip()
-            post_thread_ts = msg.get("thread_ts") or msg.get("ts") or anchor_ts
-            return (text, post_thread_ts)
+        try:
+            ts_float = float(ts_str)
+        except (TypeError, ValueError):
+            ts_float = None
 
-        text, reply_thread_ts = _fetch_via_replies(ts_str)
-        if text:
+        def _ts_matches(candidate_ts: str | None) -> bool:
+            if candidate_ts is None:
+                return False
+            cand = str(candidate_ts).strip()
+            if cand == ts_str:
+                return True
+            if ts_float is None:
+                return False
+            try:
+                return abs(float(cand) - ts_float) < 0.000001
+            except (TypeError, ValueError):
+                return False
+
+        def _scan_thread_for_target(
+            anchor_ts: str, *, max_pages: int = 4
+        ) -> tuple[str, str | None, str | None]:
+            cursor = None
+            for _ in range(max_pages):
+                payload = {"channel": channel_id, "ts": anchor_ts, "limit": 50}
+                if cursor:
+                    payload["cursor"] = cursor
+                r2 = httpx.post(
+                    "https://slack.com/api/conversations.replies",
+                    headers={"Authorization": f"Bearer {replies_token}"},
+                    json=payload,
+                    timeout=10.0,
+                )
+                if r2.status_code == 429:
+                    retry_after = getattr(r2, "headers", {}).get("Retry-After", "?")
+                    logger.warning(
+                        "fetch_message: conversations.replies rate limited channel=%s ts=%s retry_after=%s",
+                        channel_id,
+                        anchor_ts,
+                        retry_after,
+                    )
+                    return ("rate_limited", None, None)
+                j2 = r2.json()
+                if r2.status_code != 200 or not j2.get("ok"):
+                    logger.warning(
+                        "fetch_message: conversations.replies error channel=%s ts=%s error=%s",
+                        channel_id,
+                        anchor_ts,
+                        j2.get("error", "unknown"),
+                    )
+                    return ("error", None, None)
+                for msg in j2.get("messages") or []:
+                    if _ts_matches(msg.get("ts")):
+                        text = (msg.get("text") or "").strip()
+                        post_thread_ts = msg.get("thread_ts") or anchor_ts
+                        return ("found", text, post_thread_ts)
+                cursor = (j2.get("response_metadata") or {}).get("next_cursor")
+                if not cursor:
+                    break
+            return ("not_found", None, None)
+
+        direct_status, text, reply_thread_ts = _scan_thread_for_target(ts_str, max_pages=1)
+        if direct_status == "found" and text:
             return (text, reply_thread_ts)
+        if direct_status == "rate_limited":
+            return (None, None)
 
-        # If event provided parent ts, retry once with that parent anchor.
+        # If event provided parent ts, retry once with that parent anchor first.
         if thread_ts:
             parent_ts = str(thread_ts).strip()
             if parent_ts and parent_ts != ts_str:
-                text, reply_thread_ts = _fetch_via_replies(parent_ts)
-                if text:
+                parent_status, text, reply_thread_ts = _scan_thread_for_target(parent_ts)
+                if parent_status == "found" and text:
                     return (text, reply_thread_ts)
+                if parent_status == "rate_limited":
+                    return (None, None)
 
-        logger.warning("fetch_message: unable to resolve message channel=%s ts=%s", channel_id, ts_str)
+        # 3) Fallback: discover likely parent messages from history then resolve via replies(parent_ts).
+        logger.info("fetch_message: direct replies lookup failed, starting parent discovery for ts=%s", ts_str)
+        all_messages: list[dict] = []
+        history_cursor = None
+        for _ in range(4):
+            history_payload = {
+                "channel": channel_id,
+                "latest": ts_str,
+                "limit": 100,
+            }
+            if history_cursor:
+                history_payload["cursor"] = history_cursor
+            r_history = httpx.post(
+                "https://slack.com/api/conversations.history",
+                headers={"Authorization": f"Bearer {history_token}"},
+                json=history_payload,
+                timeout=10.0,
+            )
+            if r_history.status_code == 429:
+                retry_after = getattr(r_history, "headers", {}).get("Retry-After", "?")
+                logger.warning(
+                    "fetch_message: conversations.history rate limited channel=%s retry_after=%s",
+                    channel_id,
+                    retry_after,
+                )
+                return (None, None)
+            j_history = r_history.json()
+            if r_history.status_code != 200 or not j_history.get("ok"):
+                logger.warning(
+                    "fetch_message: conversations.history error channel=%s error=%s",
+                    channel_id,
+                    j_history.get("error", "unknown"),
+                )
+                break
+            all_messages.extend(j_history.get("messages") or [])
+            history_cursor = (j_history.get("response_metadata") or {}).get("next_cursor")
+            if not history_cursor or not j_history.get("has_more"):
+                break
+
+        if all_messages:
+            parent_candidates = []
+            for msg in all_messages:
+                parent_ts = msg.get("ts")
+                if not parent_ts:
+                    continue
+                try:
+                    reply_count = int(msg.get("reply_count", 0) or 0)
+                except (TypeError, ValueError):
+                    reply_count = 0
+                if reply_count > 0:
+                    parent_candidates.append(str(parent_ts).strip())
+            if not parent_candidates:
+                parent_candidates = [str((msg.get("ts") or "")).strip() for msg in all_messages if msg.get("ts")]
+            # Keep candidate set bounded; newest messages come first from history.
+            parent_candidates = [p for p in parent_candidates if p][:30]
+            logger.info(
+                "fetch_message: checking %s parent candidates from %s history messages",
+                len(parent_candidates),
+                len(all_messages),
+            )
+            for parent_ts in parent_candidates:
+                parent_status, text, reply_thread_ts = _scan_thread_for_target(parent_ts)
+                if parent_status == "found" and text:
+                    return (text, reply_thread_ts)
+                if parent_status == "rate_limited":
+                    return (None, None)
+
+        logger.warning(
+            "fetch_message: unable to resolve message channel=%s ts=%s after direct and parent-discovery lookups",
+            channel_id,
+            ts_str,
+        )
         return (None, None)
     except Exception as e:
         logger.warning("fetch_message failed: %s", e)
