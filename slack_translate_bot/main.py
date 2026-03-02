@@ -194,21 +194,58 @@ def _fetch_message(
     except ImportError:
         return (None, None)
     try:
+        def _api_call(
+            method: str,
+            token: str,
+            payload: dict[str, str | int | bool],
+            *,
+            allow_get_retry_on_invalid_arguments: bool = False,
+        ) -> tuple[int, dict, dict]:
+            headers = {"Authorization": f"Bearer {token}"}
+            # Slack Web API is form-encoded; JSON payloads can produce invalid_arguments on some methods.
+            r_local = httpx.post(
+                f"https://slack.com/api/{method}",
+                headers=headers,
+                data=payload,
+                timeout=10.0,
+            )
+            j_local = r_local.json()
+            if (
+                allow_get_retry_on_invalid_arguments
+                and r_local.status_code == 200
+                and not j_local.get("ok")
+                and j_local.get("error") == "invalid_arguments"
+            ):
+                # Some workspaces/apps are picky about encoding on specific methods.
+                r_retry = httpx.get(
+                    f"https://slack.com/api/{method}",
+                    headers=headers,
+                    params=payload,
+                    timeout=10.0,
+                )
+                try:
+                    retry_headers = dict(getattr(r_retry, "headers", {}) or {})
+                    return (r_retry.status_code, r_retry.json(), retry_headers)
+                except Exception:
+                    retry_headers = dict(getattr(r_retry, "headers", {}) or {})
+                    return (r_retry.status_code, {}, retry_headers)
+            local_headers = dict(getattr(r_local, "headers", {}) or {})
+            return (r_local.status_code, j_local, local_headers)
+
         # 1) Try channel history (works for top-level messages)
-        r = httpx.post(
-            "https://slack.com/api/conversations.history",
-            headers={"Authorization": f"Bearer {config.SLACK_BOT_TOKEN}"},
-            json={
+        status_code, j, _ = _api_call(
+            "conversations.history",
+            config.SLACK_BOT_TOKEN,
+            {
                 "channel": channel_id,
                 "oldest": ts,
                 "latest": ts,
                 "inclusive": True,
                 "limit": 1,
             },
-            timeout=10.0,
+            allow_get_retry_on_invalid_arguments=True,
         )
-        j = r.json()
-        if r.status_code == 200 and j.get("ok"):
+        if status_code == 200 and j.get("ok"):
             messages = j.get("messages") or []
             if messages:
                 return ((messages[0].get("text") or "").strip(), ts)
@@ -217,7 +254,7 @@ def _fetch_message(
                 "fetch_message: history empty for ts=%s, trying conversations.replies (reaction on thread reply)",
                 ts,
             )
-        elif r.status_code == 200 and not j.get("ok"):
+        elif status_code == 200 and not j.get("ok"):
             logger.warning(
                 "fetch_message: conversations.history error channel=%s ts=%s error=%s",
                 channel_id,
@@ -265,14 +302,14 @@ def _fetch_message(
                 payload = {"channel": channel_id, "ts": anchor_ts, "limit": _SLACK_REPLIES_LIMIT}
                 if cursor:
                     payload["cursor"] = cursor
-                r2 = httpx.post(
-                    "https://slack.com/api/conversations.replies",
-                    headers={"Authorization": f"Bearer {replies_token}"},
-                    json=payload,
-                    timeout=10.0,
+                status_code2, j2, headers2 = _api_call(
+                    "conversations.replies",
+                    replies_token,
+                    payload,
+                    allow_get_retry_on_invalid_arguments=True,
                 )
-                if r2.status_code == 429:
-                    retry_after = getattr(r2, "headers", {}).get("Retry-After", "?")
+                if status_code2 == 429:
+                    retry_after = headers2.get("Retry-After", "?")
                     logger.warning(
                         "fetch_message: conversations.replies rate limited channel=%s ts=%s retry_after=%s",
                         channel_id,
@@ -280,15 +317,15 @@ def _fetch_message(
                         retry_after,
                     )
                     return ("rate_limited", None, None)
-                j2 = r2.json()
-                if r2.status_code != 200 or not j2.get("ok"):
+                if status_code2 != 200 or not j2.get("ok"):
                     logger.warning(
-                        "fetch_message: conversations.replies error channel=%s ts=%s token=%s limit=%s error=%s",
+                        "fetch_message: conversations.replies error channel=%s ts=%s token=%s limit=%s error=%s detail=%s",
                         channel_id,
                         anchor_ts,
                         replies_token_kind,
                         _SLACK_REPLIES_LIMIT,
                         j2.get("error", "unknown"),
+                        (j2.get("response_metadata") or {}).get("messages"),
                     )
                     return ("error", None, None)
                 for msg in j2.get("messages") or []:
@@ -329,28 +366,28 @@ def _fetch_message(
             }
             if history_cursor:
                 history_payload["cursor"] = history_cursor
-            r_history = httpx.post(
-                "https://slack.com/api/conversations.history",
-                headers={"Authorization": f"Bearer {history_token}"},
-                json=history_payload,
-                timeout=10.0,
+            status_code_h, j_history, history_headers = _api_call(
+                "conversations.history",
+                history_token,
+                history_payload,
+                allow_get_retry_on_invalid_arguments=True,
             )
-            if r_history.status_code == 429:
-                retry_after = getattr(r_history, "headers", {}).get("Retry-After", "?")
+            if status_code_h == 429:
+                retry_after = history_headers.get("Retry-After", "?")
                 logger.warning(
                     "fetch_message: conversations.history rate limited channel=%s retry_after=%s",
                     channel_id,
                     retry_after,
                 )
                 return (None, None)
-            j_history = r_history.json()
-            if r_history.status_code != 200 or not j_history.get("ok"):
+            if status_code_h != 200 or not j_history.get("ok"):
                 logger.warning(
-                    "fetch_message: conversations.history error channel=%s token=%s limit=%s error=%s",
+                    "fetch_message: conversations.history error channel=%s token=%s limit=%s error=%s detail=%s",
                     channel_id,
                     history_token_kind,
                     _SLACK_HISTORY_LIMIT,
                     j_history.get("error", "unknown"),
+                    (j_history.get("response_metadata") or {}).get("messages"),
                 )
                 break
             all_messages.extend(j_history.get("messages") or [])
