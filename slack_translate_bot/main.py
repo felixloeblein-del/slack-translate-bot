@@ -147,6 +147,27 @@ def _should_translate_and_strip(text: str) -> str | None:
     return text
 
 
+def _normalize_reaction_name(name: str) -> str:
+    """Normalize Slack emoji shortcodes for robust matching."""
+    return (name or "").strip().lower().replace("-", "_")
+
+
+def _message_has_reaction(message: dict, reaction_name: str) -> bool:
+    """Return True when message.reactions contains the configured trigger emoji."""
+    expected = _normalize_reaction_name(reaction_name)
+    for reaction in message.get("reactions") or []:
+        name = _normalize_reaction_name(str(reaction.get("name") or ""))
+        if name != expected:
+            continue
+        try:
+            count = int(reaction.get("count", 1) or 0)
+        except (TypeError, ValueError):
+            count = 1
+        if count > 0:
+            return True
+    return False
+
+
 def _extract_content_to_translate(text: str) -> str:
     """
     If the message contains a known preamble phrase (e.g. 'translation of the following:'),
@@ -513,8 +534,8 @@ async def slack_events(request: Request) -> Response:
         logger.info("reaction_added received: reaction=%r (expecting %r)", raw_reaction, config.REACTION_TRIGGER_EMOJI)
         if config.TRANSLATE_TRIGGER != "reaction":
             return PlainTextResponse("OK", status_code=200)
-        reaction = raw_reaction.strip().lower().replace("-", "_")
-        expected = config.REACTION_TRIGGER_EMOJI.lower().replace("-", "_")
+        reaction = _normalize_reaction_name(raw_reaction)
+        expected = _normalize_reaction_name(config.REACTION_TRIGGER_EMOJI)
         if reaction != expected:
             logger.info("reaction %r does not match trigger %r; skipping", reaction, expected)
             return PlainTextResponse("OK", status_code=200)
@@ -550,6 +571,60 @@ async def slack_events(request: Request) -> Response:
             reply_thread_ts = message_ts
         if _post_thread_reply(channel_id, reply_thread_ts, translated):
             logger.info("Posted translation (reaction) for channel=%s ts=%s", channel_id, message_ts)
+        return PlainTextResponse("OK", status_code=200)
+
+    # --- Reaction trigger + edits: if message with trigger emoji gets edited, post updated translation ---
+    if (
+        event.get("type") == "message"
+        and event.get("subtype") == "message_changed"
+        and config.TRANSLATE_TRIGGER == "reaction"
+    ):
+        channel_id = event.get("channel")
+        edited_message = event.get("message") or {}
+        previous_message = event.get("previous_message") or {}
+        message_ts = edited_message.get("ts") or previous_message.get("ts")
+        if not channel_id or not message_ts:
+            return PlainTextResponse("OK", status_code=200)
+        if config.CHANNEL_IDS_LIST and channel_id not in config.CHANNEL_IDS_LIST:
+            return PlainTextResponse("OK", status_code=200)
+        if edited_message.get("bot_id") or previous_message.get("bot_id"):
+            return PlainTextResponse("OK", status_code=200)
+
+        reaction_source = (
+            edited_message
+            if edited_message.get("reactions") is not None
+            else previous_message
+        )
+        if not _message_has_reaction(reaction_source, config.REACTION_TRIGGER_EMOJI):
+            return PlainTextResponse("OK", status_code=200)
+
+        edit_marker = str(
+            (edited_message.get("edited") or {}).get("ts") or event.get("event_ts") or ""
+        ).strip()
+        if edit_marker and _already_processed(channel_id, f"{message_ts}:edit:{edit_marker}"):
+            return PlainTextResponse("OK", status_code=200)
+
+        text = (edited_message.get("text") or "").strip()
+        if not text:
+            return PlainTextResponse("OK", status_code=200)
+        text = _extract_content_to_translate(text)
+        if not text:
+            return PlainTextResponse("OK", status_code=200)
+        translated = _translate_headline_and_body(text)
+        if not translated:
+            return PlainTextResponse("OK", status_code=200)
+
+        reply_thread_ts = (
+            edited_message.get("thread_ts")
+            or previous_message.get("thread_ts")
+            or message_ts
+        )
+        if _post_thread_reply(channel_id, reply_thread_ts, translated):
+            logger.info(
+                "Posted updated translation (message_changed) for channel=%s ts=%s",
+                channel_id,
+                message_ts,
+            )
         return PlainTextResponse("OK", status_code=200)
 
     # --- Message trigger: translate on new message (all / prefix / mention) ---
