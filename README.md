@@ -1,209 +1,157 @@
-# Slack auto-translate (English → German)
+# Slack Translate Bot (EN -> DE)
 
-Standalone HTTP service that subscribes to Slack Events API and automatically translates English channel messages to German, posting the translation as a **thread reply** under the original message.
+FastAPI Slack Events bot that translates English messages to German with DeepL and posts the translation as a thread reply.
 
-This project lives under `Documents/Repo Destination/slack-translate-bot` and is independent of any other repo.
+## Latest Updates (2026-03-02)
 
-## How it works
+- Fixed reaction-triggered translation for messages inside threads.
+  - Uses robust `conversations.history` + `conversations.replies` lookup flow.
+  - Uses Slack-compatible API limits (`limit=15`) for history/replies calls.
+  - Uses form-encoded Slack Web API requests and retries `invalid_arguments` with GET params.
+  - Uses `SLACK_USER_TOKEN` for channel thread reads (required by Slack for many channel thread cases).
+- Added reaction-mode edit handling (`message_changed`).
+  - If a message with trigger emoji is edited, bot posts an updated translation reply.
+  - If edit payload does not include reactions, bot checks current reactions via `reactions.get`.
+  - Slack retry duplicates are deduped per `(message_ts + edit_ts)`.
 
-1. You create a Slack app, enable Event Subscriptions, and set the Request URL to `https://your-host/slack/events`.
-2. When someone posts a message in a channel where the app is installed, Slack sends an HTTP POST to this endpoint.
-3. The service verifies the request signature, translates the message with DeepL (only when the detected source language is English), and posts the German translation as a thread reply.
+## Features
 
-## Setup
+- Translation EN -> DE with DeepL
+- Trigger modes:
+  - `all`
+  - `prefix`
+  - `mention`
+  - `reaction` (recommended for this project)
+- Preamble stripping (`EXTRACT_CONTENT_AFTER`)
+- Slack emoji shortcode preservation (`:emoji_name:`)
+- Thread-safe behavior for:
+  - top-level messages
+  - thread replies
+  - edited messages in reaction mode
 
-### 1. Slack app
+## Requirements
 
-1. Create an app at [api.slack.com/apps](https://api.slack.com/apps).
-2. **Event Subscriptions**: Enable, set Request URL to your deployed URL (e.g. `https://your-domain.com/slack/events`). Subscribe to **message.channels** (or use a channel filter).
-3. **OAuth & Permissions**: Add Bot Token Scopes: `channels:history`, `channels:read`, `chat:write`. If you use `TRANSLATE_TRIGGER=reaction`, also add `reactions:read`.
-4. Install the app to your workspace and **invite the bot to the channel(s)** you want to translate.
-5. Copy **Signing Secret** (Basic Information) and **Bot User OAuth Token** (OAuth & Permissions) into `.env`.
+- Python 3.11+
+- Slack app with Events API enabled
+- DeepL API key
 
-### 2. DeepL
-
-1. Get an API key from [DeepL for Developers](https://www.deepl.com/pro-api).
-2. Set `DEEPL_API_KEY` in `.env`.
-
-### 3. Environment
-
-From the **slack-translate-bot** directory:
-
-```bash
-cp .env.example .env
-# Edit .env with your credentials
-```
-
-Set:
-
-- `SLACK_SIGNING_SECRET` – from Slack app Basic Information
-- `SLACK_BOT_TOKEN` – Bot User OAuth Token (starts with `xoxb-`)
-- `DEEPL_API_KEY` – your DeepL API key
-
-Optional:
-
-- `SLACK_CHANNEL_IDS` – comma-separated channel IDs; if set, only these channels are translated (default: all channels the bot is in).
-- `TRANSLATE_TRIGGER` – when to translate: `all` (every message, default), `prefix` (only if message starts with `TRANSLATE_PREFIX`), `mention` (only if the message @mentions the bot), or `reaction` (only when someone adds `REACTION_TRIGGER_EMOJI` to a message).
-- `TRANSLATE_PREFIX` – for `TRANSLATE_TRIGGER=prefix`, only messages starting with this are translated (e.g. `[translate]`); the prefix is stripped before translating.
-- `REACTION_TRIGGER_EMOJI` – for `TRANSLATE_TRIGGER=reaction`, the emoji shortcode name without colons (e.g. `de` for :de:). Default `de`.
-- `EXTRACT_CONTENT_AFTER` – comma-separated phrases; if a message contains one, only the text *after* that phrase is translated (so preamble like “@here … translation of the following:” is skipped). Default: `translation of the following:,the following:`.
-
-### 4. Run locally
-
-From the **slack-translate-bot** directory:
+Install:
 
 ```bash
 pip install -r requirements.txt
-python -m slack_translate_bot.main
 ```
 
-Or with uvicorn:
+Run locally:
 
 ```bash
 uvicorn slack_translate_bot.main:app --host 0.0.0.0 --port 8000
 ```
 
-**Why ngrok?** Slack’s servers send HTTP POSTs *to* your app when someone posts a message. Your app must be reachable at a **public HTTPS URL**. When you run the app on your laptop (`localhost`), the internet can’t reach it. Ngrok creates a temporary tunnel: a public URL (e.g. `https://abc.ngrok.io`) forwards to your `localhost:8000`. So ngrok is only for **local testing**. When your computer or the app is off, the URL stops working.
-
-**If you need the bot always on (even when your computer is off):** don’t use ngrok. Deploy the app to a cloud host (see **Deploy for 24/7** below) and use that URL as the Slack Request URL.
-
-### 5. Deploy for free (Render) – recommended first
-
-**Free tier:** Render’s free web service tier doesn’t require a credit card. The service may spin down after ~15 minutes of no traffic and take ~30–60 seconds to wake on the first message; after that, translations work as normal.
-
-1. **Put the project on GitHub**
-   - Create a new repo on GitHub (e.g. `slack-translate-bot`).
-   - In Terminal, from the project folder:
-     ```bash
-     cd "/Users/felix.loeblein/Documents/Repo Destination/slack-translate-bot"
-     git init
-     git add .
-     git commit -m "Initial commit"
-     git branch -M main
-     git remote add origin https://github.com/YOUR-USERNAME/slack-translate-bot.git
-     git push -u origin main
-     ```
-   - (Replace `YOUR-USERNAME` with your GitHub username.)
-
-2. **Create the Slack app and get secrets (so you can add them on Render)**
-   - [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From scratch** (e.g. “EN→DE Translate”).
-   - **OAuth & Permissions** → Bot Token Scopes: `channels:history`, `channels:read`, `chat:write` → **Install to Workspace**.
-   - Copy **Signing Secret** (Basic Information) and **Bot User OAuth Token** (OAuth & Permissions). You’ll paste these into Render in step 4.
-   - Don’t set Event Subscriptions or Request URL yet; do that after you have the Render URL.
-
-3. **Deploy on Render**
-   - Go to [render.com](https://render.com) and sign up / log in (GitHub login is easiest).
-   - **Dashboard** → **New +** → **Web Service**.
-   - **Connect a repository**: select your GitHub account and the `slack-translate-bot` repo. Click **Connect**.
-   - Render may auto-fill from `render.yaml`. If not, set:
-     - **Build command:** `pip install -r requirements.txt`
-     - **Start command:** `uvicorn slack_translate_bot.main:app --host 0.0.0.0 --port $PORT`
-   - **Instance type:** leave **Free**.
-   - Click **Advanced** → **Add Environment Variable**. Add:
-     - `SLACK_SIGNING_SECRET` = (paste Signing Secret)
-     - `SLACK_BOT_TOKEN` = (paste Bot User OAuth Token)
-     - `DEEPL_API_KEY` = (your DeepL API key)
-   - Click **Create Web Service**. Wait for the first deploy to finish.
-
-4. **Get your URL**
-   - At the top of the service page you’ll see a URL like `https://slack-translate-bot-xxxx.onrender.com`. That’s your **translation bot URL**.
-   - The **Request URL** for Slack is: `https://slack-translate-bot-xxxx.onrender.com/slack/events` (your URL + `/slack/events`).
-
-5. **Point Slack at the bot**
-   - In [api.slack.com/apps](https://api.slack.com/apps) → your app → **Event Subscriptions** → **On**.
-   - **Request URL:** paste `https://YOUR-RENDER-URL/slack/events` → **Save**. It should show **Verified**.
-   - Under **Subscribe to bot events**, add **message.channels** → **Save Changes**.
-
-6. **Test**
-   - In a Slack channel: `/invite @EN→DE Translate` (or your app name), then post an English message. The bot should reply in a thread with the German translation.
-
----
-
-**Other free options**
-
-- **Railway:** [railway.app](https://railway.app) – free plan available; deploy from the same GitHub repo (Railway can use the `Dockerfile` in this repo). Add the same env vars in the project **Variables**, then use the generated URL + `/slack/events` as the Slack Request URL.
-- **Fly.io:** Free allowance; use `fly launch` and set env vars; then use `https://your-app.fly.dev/slack/events` as the Request URL.
-
-After deployment, the bot runs on the host; you don’t need your computer or ngrok.
-
-## Try it and test it
-
-### Quick test flow
-
-1. **Install and configure**
-   ```bash
-   cd "/Users/felix.loeblein/Documents/Repo Destination/slack-translate-bot"
-   pip install -r requirements.txt
-   cp .env.example .env
-   ```
-   Edit `.env` and add (you’ll fill Slack values in step 4):
-   - `DEEPL_API_KEY` – get a free key at [DeepL API](https://www.deepl.com/pro-api#developer)
-
-2. **Run the app**
-   ```bash
-   python -m slack_translate_bot.main
-   ```
-   You should see the app listening on port 8000.
-
-3. **Expose it with ngrok (only for local testing – not for 24/7)**  
-   In another terminal: `ngrok http 8000`. Copy the **HTTPS** URL and use `https://YOUR-NGROK-URL/slack/events` as the Slack Request URL. For always-on, use **Deploy for 24/7** above instead.
-
-4. **Create and configure the Slack app**
-   - Go to [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From scratch** (name e.g. “EN→DE Translate”).
-   - **Event Subscriptions** → Turn **On**.
-   - **Request URL**: `https://YOUR-NGROK-URL/slack/events` (e.g. `https://abc123.ngrok.io/slack/events`).  
-     Slack will send a challenge; if your app is running, it should verify and show “Verified”.
-   - Under **Subscribe to bot events**, add **message.channels** (or **message.channels** with a channel filter if you want only one channel).
-   - **OAuth & Permissions** → **Bot Token Scopes**: add `channels:history`, `channels:read`, `chat:write`.
-   - **Install App** to your workspace.
-   - Copy **Signing Secret** (under **Basic Information**) and **Bot User OAuth Token** (under **OAuth & Permissions**) into your `.env` as `SLACK_SIGNING_SECRET` and `SLACK_BOT_TOKEN`.
-   - Restart the app so it picks up the new env vars.
-
-5. **Invite the bot and test**
-   - In Slack, open the channel where you want translations.
-   - Invite the app: type `/invite @YourAppName` (the name you gave the app) in that channel.
-   - Post a message in **English**, e.g. “Hello, how are you?”  
-   - Within a few seconds you should see a **thread reply** from the bot with the German translation (e.g. “Hallo, wie geht es dir?”).
-
-**Sanity checks**
-
-- **Health**: Open `http://localhost:8000/health` in a browser (or `curl http://localhost:8000/health`). You should get `{"status":"ok"}`.
-- **URL verification**: When you save the Request URL in Slack, the app must be running and reachable via ngrok. If it fails, check that the app is running, ngrok is pointing at 8000, and the URL ends with `/slack/events`.
-
-### Optional: limit to one channel
-
-In Slack, get the channel ID (right‑click the channel → **View channel details** → copy the ID from the bottom of the page, or from the channel URL). In `.env` set e.g.:
+Health check:
 
 ```bash
-SLACK_CHANNEL_IDS=C01234ABCDE
+curl http://localhost:8000/health
 ```
 
-Restart the app. Only that channel will be translated.
+## Environment Variables
 
----
+Copy `.env.example` to `.env` and set values:
 
-## Endpoints
+- Required:
+  - `SLACK_SIGNING_SECRET`
+  - `SLACK_BOT_TOKEN`
+  - `DEEPL_API_KEY`
+- Optional:
+  - `TRANSLATE_TRIGGER` (`all|prefix|mention|reaction`)
+  - `REACTION_TRIGGER_EMOJI` (default `de`)
+  - `SLACK_CHANNEL_IDS` (comma-separated channel IDs)
+  - `SLACK_USER_TOKEN` (xoxp, strongly recommended for channel thread replies)
+  - `EXTRACT_CONTENT_AFTER`
 
-- `POST /slack/events` – Slack Events API (url_verification + message events).
-- `GET /health` – Health check.
+## Slack App Setup
 
-## Behaviour
+### Event Subscriptions
 
-- **Language detection**: Only messages detected as English are translated; others are ignored.
-- **Idempotency**: Duplicate events (e.g. Slack retries) are detected so the same message is not translated twice.
-- **Bot messages** and **message subtypes** (e.g. channel_join, edits) are ignored.
-- **Translate only specific messages**: Set `TRANSLATE_TRIGGER=prefix` and `TRANSLATE_PREFIX=[translate]` so only messages that start with that prefix are translated; or `TRANSLATE_TRIGGER=mention` so only messages that @mention the bot are translated; or `TRANSLATE_TRIGGER=reaction` so only when someone adds the trigger emoji (e.g. :globe:) to a message — then add **reaction_added** under Subscribe to bot events and scope **reactions:read**.
-- **Emoji preservation**: Slack emoji shortcodes (e.g. `:Speaker:`, `:wave:`) are replaced with placeholders before sending to DeepL and restored in the reply, so emojis are not translated or broken.
+Set Request URL to:
 
-## Translation format (l10n)
+`https://<your-service>/slack/events`
 
-For market/news-style messages (e.g. in an l10n channel), the bot is intended to translate only **headline** and **body**; the **request line** is not translated.
+Subscribe to bot events:
 
-- **Do not translate**: The request line (e.g. “@here Can you please assist us with a translation of the following:”). Use `EXTRACT_CONTENT_AFTER` (see Environment) so only the content after that phrase is sent to DeepL.
-- **Translate**:
-  1. **Headline**: Line in the form `:emoji: Short phrase` — keep the emoji token as-is, translate only the short phrase. Keep ticker symbols (e.g. NESN, DBX) in the headline.
-  2. **Body**: The sentence below the headline. Keep tickers; use target locale for numbers (e.g. German: `2.4%` → `2,4 %`).
+- `reaction_added` (for reaction trigger)
+- `message.channels` (needed for message edits in public channels)
+- `message.groups` (needed if you use private channels)
 
-**Output format**: The thread reply should contain only the translated parts, one line for the headline and one for the body (and repeat for multiple headline+body pairs). Do not repeat or translate the “@here …” line.
+### OAuth Scopes
 
-A full specification with examples is in [.cursor/rules/l10n-translation-format.mdc](.cursor/rules/l10n-translation-format.mdc) for Cursor/AI-assisted translation workflows.
+Bot token scopes:
+
+- `chat:write`
+- `channels:read`
+- `channels:history`
+- `reactions:read`
+- `groups:history` (if private channels)
+
+User token scopes (for `SLACK_USER_TOKEN`, recommended):
+
+- `channels:history`
+- `groups:history` (if private channels)
+
+After scope/event changes, reinstall the Slack app.
+
+## Behavior Notes
+
+### Reaction mode (`TRANSLATE_TRIGGER=reaction`)
+
+- Add `:de:` to a message -> bot posts translation as thread reply.
+- Works for:
+  - top-level channel posts
+  - replies inside threads
+
+### Edited message behavior (reaction mode)
+
+- If edited message still has trigger emoji -> bot posts updated translation reply.
+- If trigger emoji is not present -> edit is ignored.
+
+### Re-adding same emoji
+
+- In same app runtime, duplicate `reaction_added` on same message `ts` is ignored by idempotency cache.
+- After restart/deploy (cache reset), re-adding can translate again.
+
+## Testing
+
+Run all tests:
+
+```bash
+PYTHONPATH=. pytest -q
+```
+
+Current suite covers:
+
+- message fetch (history/replies + fallbacks)
+- translation utilities
+- extraction logic
+- reaction-mode edit flow
+
+## Deploy (Render)
+
+This repo includes `render.yaml` for Web Service deployment.
+
+Default start command:
+
+```bash
+uvicorn slack_translate_bot.main:app --host 0.0.0.0 --port $PORT
+```
+
+## Troubleshooting
+
+- `reaction_added` seen but no translation:
+  - verify emoji name matches `REACTION_TRIGGER_EMOJI`
+  - verify app is in the channel
+  - verify event subscription includes `reaction_added`
+- Thread replies fail to fetch:
+  - set `SLACK_USER_TOKEN` (xoxp)
+  - verify user token scopes (`channels:history` and `groups:history` if needed)
+- Edit translations not firing:
+  - verify `message.channels` (and `message.groups` for private) is subscribed
+  - check logs for `message_changed received for reaction mode`
