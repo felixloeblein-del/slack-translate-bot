@@ -31,32 +31,29 @@ def test_fetch_message_from_history(mock_config, mock_post):
 @patch("httpx.post")
 @patch("slack_translate_bot.main.config")
 def test_fetch_message_from_replies_when_not_in_history(mock_config, mock_post):
-    """When message is not in channel history, fetch channel parents then replies with parent ts."""
+    """When message is not in channel history, fetch it directly via conversations.replies(ts)."""
     mock_config.SLACK_BOT_TOKEN = "xoxb-fake"
-    mock_config.SLACK_USER_TOKEN = ""
-    # Call 1: history (oldest/latest) -> empty. Call 2: history (limit=50) -> one parent. Call 3: replies(parent_ts) -> thread.
+    mock_config.SLACK_USER_TOKEN = "xoxp-fake"
+    # Call 1: history (oldest/latest) -> empty. Call 2: replies(ts) -> reply message.
     history_empty = type("R", (), {"status_code": 200, "json": lambda *a, **k: {"ok": True, "messages": []}})()
-    history_parents = type("R", (), {
-        "status_code": 200,
-        "json": lambda *a, **k: {"ok": True, "messages": [{"ts": "123.0", "reply_count": 1}]},
-    })()
     replies_resp = type("R", (), {
         "status_code": 200,
         "json": lambda *a, **k: {
             "ok": True,
             "messages": [
-                {"ts": "123.0", "text": "Parent"},
                 {"ts": "456.0", "thread_ts": "123.0", "text": "Thread reply to translate"},
             ],
         },
     })()
-    mock_post.side_effect = [history_empty, history_parents, replies_resp]
+    mock_post.side_effect = [history_empty, replies_resp]
     text, reply_ts = _fetch_message("C123", "456.0")
     assert text == "Thread reply to translate"
     assert reply_ts == "123.0"
-    assert mock_post.call_count == 3
-    # Third call is conversations.replies with parent ts
-    assert mock_post.call_args_list[2].kwargs["json"].get("ts") == "123.0"
+    assert mock_post.call_count == 2
+    # Second call is conversations.replies with message ts
+    replies_call = mock_post.call_args_list[1]
+    assert replies_call.kwargs["json"].get("ts") == "456.0"
+    assert replies_call.kwargs["headers"]["Authorization"] == "Bearer xoxp-fake"
 
 
 @patch("slack_translate_bot.main.config")

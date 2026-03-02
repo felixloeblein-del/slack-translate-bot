@@ -180,8 +180,8 @@ def _fetch_message(
     when posting the translation reply (parent message ts for threads, or message ts for channel messages).
 
     Tries conversations.history first (channel messages). If not found, uses
-    conversations.replies: Slack does not send thread_ts in reaction_added for thread
-    replies, but conversations.replies(channel, ts) accepts any message ts in the thread.
+    conversations.replies with the reacted message ts directly. Slack accepts a
+    thread parent ts or a reply ts for this method.
     """
     if not config.SLACK_BOT_TOKEN:
         return (None, None)
@@ -221,67 +221,70 @@ def _fetch_message(
                 j.get("error", "unknown"),
             )
 
-        # 2) Use conversations.replies. Slack requires the *parent* message ts. We don't have it
-        # from reaction_added. So: get channel history with BOT token (bot is in channel), then
-        # for each message call replies (user token) to get its thread and look for our ts.
-        replies_token = config.SLACK_USER_TOKEN or config.SLACK_BOT_TOKEN
+        # 2) Use conversations.replies directly with the reacted message ts.
+        # This avoids expensive parent scanning and works for both parent and reply ts.
         ts_str = str(ts).strip()
-        logger.info("fetch_message: finding thread for ts=%s", ts_str)
-        # Bot token for history so we see the same channel messages as the bot
-        r_history = httpx.post(
-            "https://slack.com/api/conversations.history",
-            headers={"Authorization": f"Bearer {config.SLACK_BOT_TOKEN}"},
-            json={
+        is_channel = channel_id.startswith(("C", "G"))
+        replies_token = config.SLACK_USER_TOKEN or config.SLACK_BOT_TOKEN
+        if is_channel and not config.SLACK_USER_TOKEN:
+            logger.warning(
+                "fetch_message: SLACK_USER_TOKEN is not set; conversations.replies on channel threads may fail"
+            )
+
+        def _fetch_via_replies(anchor_ts: str) -> tuple[str | None, str | None]:
+            payload = {
                 "channel": channel_id,
-                "limit": 80,
-            },
-            timeout=10.0,
-        )
-        if r_history.status_code != 200 or not r_history.json().get("ok"):
-            logger.warning("fetch_message: history failed for channel=%s", channel_id)
-            return (None, None)
-        messages = r_history.json().get("messages") or []
-        logger.info("fetch_message: got %s channel messages, checking up to 25 for thread containing ts=%s", len(messages), ts_str)
-        # Call replies for every message (reply_count can be missing in history); cap at 25 to limit API use
-        for parent in messages[:25]:
-            parent_ts = parent.get("ts")
-            if not parent_ts:
-                continue
-            parent_ts_str = str(parent_ts).strip()
-            cursor = None
-            for _ in range(5):  # up to 5 pages of replies per thread (75 replies)
-                payload = {
-                    "channel": channel_id,
-                    "ts": parent_ts_str,
-                    "limit": 15,
-                }
-                if cursor:
-                    payload["cursor"] = cursor
-                r2 = httpx.post(
-                    "https://slack.com/api/conversations.replies",
-                    headers={"Authorization": f"Bearer {replies_token}"},
-                    json=payload,
-                    timeout=10.0,
+                "ts": anchor_ts,
+                "oldest": ts_str,
+                "latest": ts_str,
+                "inclusive": True,
+                "limit": 1,
+            }
+            r2 = httpx.post(
+                "https://slack.com/api/conversations.replies",
+                headers={"Authorization": f"Bearer {replies_token}"},
+                json=payload,
+                timeout=10.0,
+            )
+            if r2.status_code == 429:
+                retry_after = getattr(r2, "headers", {}).get("Retry-After", "?")
+                logger.warning(
+                    "fetch_message: conversations.replies rate limited channel=%s ts=%s retry_after=%s",
+                    channel_id,
+                    anchor_ts,
+                    retry_after,
                 )
-                j2 = r2.json()
-                if r2.status_code != 200 or not j2.get("ok"):
-                    break
-                for msg in j2.get("messages") or []:
-                    msg_ts = msg.get("ts")
-                    if msg_ts is None:
-                        continue
-                    if str(msg_ts).strip() == ts_str:
-                        text = (msg.get("text") or "").strip()
-                        post_thread_ts = msg.get("thread_ts") or parent_ts_str
-                        return (text, post_thread_ts)
-                cursor = (j2.get("response_metadata") or {}).get("next_cursor")
-                if not cursor:
-                    break
-        logger.warning(
-            "fetch_message: ts=%s not found in any of %s recent channel messages",
-            ts_str,
-            min(25, len(messages)),
-        )
+                return (None, None)
+            j2 = r2.json()
+            if r2.status_code != 200 or not j2.get("ok"):
+                logger.warning(
+                    "fetch_message: conversations.replies error channel=%s ts=%s error=%s",
+                    channel_id,
+                    anchor_ts,
+                    j2.get("error", "unknown"),
+                )
+                return (None, None)
+            messages = j2.get("messages") or []
+            if not messages:
+                return (None, None)
+            msg = messages[0]
+            text = (msg.get("text") or "").strip()
+            post_thread_ts = msg.get("thread_ts") or msg.get("ts") or anchor_ts
+            return (text, post_thread_ts)
+
+        text, reply_thread_ts = _fetch_via_replies(ts_str)
+        if text:
+            return (text, reply_thread_ts)
+
+        # If event provided parent ts, retry once with that parent anchor.
+        if thread_ts:
+            parent_ts = str(thread_ts).strip()
+            if parent_ts and parent_ts != ts_str:
+                text, reply_thread_ts = _fetch_via_replies(parent_ts)
+                if text:
+                    return (text, reply_thread_ts)
+
+        logger.warning("fetch_message: unable to resolve message channel=%s ts=%s", channel_id, ts_str)
         return (None, None)
     except Exception as e:
         logger.warning("fetch_message failed: %s", e)
