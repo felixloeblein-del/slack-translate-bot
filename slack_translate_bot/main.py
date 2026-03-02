@@ -83,6 +83,10 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Slack EN->DE Translate")
 
+# conversations.history/replies may enforce max=15 for some app types.
+_SLACK_HISTORY_LIMIT = 15
+_SLACK_REPLIES_LIMIT = 15
+
 # Idempotency: avoid posting duplicate translations when Slack retries.
 # In-memory (channel_id, ts) with bounded size; for multi-instance use Redis.
 _MAX_IDEMPOTENCY_SIZE = 10_000
@@ -256,7 +260,7 @@ def _fetch_message(
         ) -> tuple[str, str | None, str | None]:
             cursor = None
             for _ in range(max_pages):
-                payload = {"channel": channel_id, "ts": anchor_ts, "limit": 50}
+                payload = {"channel": channel_id, "ts": anchor_ts, "limit": _SLACK_REPLIES_LIMIT}
                 if cursor:
                     payload["cursor"] = cursor
                 r2 = httpx.post(
@@ -317,7 +321,7 @@ def _fetch_message(
             history_payload = {
                 "channel": channel_id,
                 "latest": ts_str,
-                "limit": 100,
+                "limit": _SLACK_HISTORY_LIMIT,
             }
             if history_cursor:
                 history_payload["cursor"] = history_cursor

@@ -53,6 +53,7 @@ def test_fetch_message_from_replies_when_not_in_history(mock_config, mock_post):
     # Second call is conversations.replies with message ts
     replies_call = mock_post.call_args_list[1]
     assert replies_call.kwargs["json"].get("ts") == "456.0"
+    assert replies_call.kwargs["json"].get("limit") == 15
     assert replies_call.kwargs["headers"]["Authorization"] == "Bearer xoxp-fake"
 
 
@@ -91,9 +92,11 @@ def test_fetch_message_falls_back_to_parent_discovery_on_invalid_arguments(mock_
     # Fallback history lookup should use user token when available.
     history_fallback_call = mock_post.call_args_list[2]
     assert history_fallback_call.kwargs["headers"]["Authorization"] == "Bearer xoxp-fake"
+    assert history_fallback_call.kwargs["json"].get("limit") == 15
     # Final fallback replies call should anchor on the parent ts.
     replies_fallback_call = mock_post.call_args_list[3]
     assert replies_fallback_call.kwargs["json"].get("ts") == "123.0"
+    assert replies_fallback_call.kwargs["json"].get("limit") == 15
 
 
 @patch("slack_translate_bot.main.config")
